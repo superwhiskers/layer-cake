@@ -1,0 +1,16 @@
+[workspace]
+members = [
+  "gui",
+
+  "lib/core",
+  "lib/modrinth",
+  "lib/mojang",
+]
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+debug = false
+strip = "symbols"
+panic = "abort"
+lto = "fat"

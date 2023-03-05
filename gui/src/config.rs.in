@@ -1,0 +1,7 @@
+pub const PKGNAME: &str = @PKGNAME@;
+pub const APP_ID: &str = @APP_ID@;
+pub const PATH_ID: &str = @PATH_ID@;
+pub const VERSION: &str = @VERSION@;
+pub const PROFILE: &str = @PROFILE@;
+pub const VCS_TAG: &str = @VCS_TAG@;
+pub const DATADIR: &str = @DATADIR@;

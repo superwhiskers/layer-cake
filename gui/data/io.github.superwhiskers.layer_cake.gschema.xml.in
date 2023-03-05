@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <enum id="@APP_ID@.significant-versions">
+    <value nick="none" value="1"/>
+    <value nick="zero" value="2"/>
+  </enum>
+
+  <enum id="@APP_ID@.color-scheme-preference">
+    <value nick="default" value="1"/>
+    <value nick="prefer-dark" value="2"/>
+    <value nick="prefer-light" value="3"/>
+  </enum>
+
+  <schema path="@PATH_ID@/" id="@APP_ID@" gettext-domain="@PKGNAME@">
+    <key name="last-significant-version-used" enum="@APP_ID@.significant-versions">
+      <default>"none"</default>
+      <summary>The last significant version of this application that has been used</summary>
+      <description>
+        This is used to decide when to display the application's welcome screen,
+        and what information to present on it
+      </description>
+    </key>
+
+    <key name="color-scheme-preference" enum="@APP_ID@.color-scheme-preference">
+      <default>"default"</default>
+      <summary>The color scheme to use for the application</summary>
+      <description>
+        By default, the application will use the system-indicated preference for
+        color schemes, but it may be overriden with this preference
+      </description>
+    </key>
+  </schema>
+</schemalist>

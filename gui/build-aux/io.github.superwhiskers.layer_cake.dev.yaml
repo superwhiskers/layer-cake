@@ -1,0 +1,46 @@
+app-id: "io.github.superwhiskers.layer_cake.dev"
+runtime: "org.gnome.Platform"
+runtime-version: "master"
+sdk: "org.gnome.Sdk"
+sdk-extensions:
+    # it may become necessary to use nightly in the future
+  - "org.freedesktop.Sdk.Extension.rust-stable"
+    # necessary for minecraft to run
+  - "org.freedesktop.Sdk.Extension.openjdk17"
+  - "org.freedesktop.Sdk.Extension.openjdk8"
+command: "layer-cake-gui"
+finish-args:
+    # necessary for minecraft (i'd like to look into sandboxed x11 someday)
+  - "--socket=x11"
+  - "--socket=wayland"
+  - "--socket=pulseaudio"
+    # necessary to download stuff and to play online
+  - "--share=network"
+    # necessary for x11
+  - "--share=ipc"
+    # necessary for opengl
+  - "--device=dri"
+
+  # development build arguments
+  - "--env=LAYER_CAKE__GENERAL__LOG_FILTER=layer_cake=debug"
+  - "--env=RUST_BACKTRACE=1"
+build-options:
+  append-path: "/usr/lib/sdk/rust-stable/bin"
+  build-args:
+    - "--share=network"
+modules:
+  - name: "layer_cake"
+    buildsystem: "meson"
+    sources:
+      - type: "dir"
+        path: "../"
+  - name: "openjdk"
+    buildsystem: "simple"
+    build-commands:
+      - "mkdir -p /app/jdk"
+      - "/usr/lib/sdk/openjdk17/install.sh"
+      - "mv /app/jre /app/jdk/17"
+      - "/usr/lib/sdk/openjdk8/install.sh"
+      - "mv /app/jre /app/jdk/8"
+    cleanup:
+      - "/jre"

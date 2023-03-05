@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>@APP_ID@</id>
+  <name>@NAME@</name>
+  <summary>graphical frontend for the opinionated minecraft launcher you didn't want</summary>
+  <translation type="gettext">@PKGNAME@</translation>
+  <developer_name>superwhiskers</developer_name>
+  <update_contact>whiskerdev@protonmail.com</update_contact>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <launchable type="desktop-id">@APP_ID@.desktop</launchable>
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-fantasy">moderate</content_attribute>
+    <content_attribute id="social-chat">intense</content_attribute>
+  </content_rating>
+
+  <description>
+    <p>
+      layer cake is the opinionated minecraft launcher you didn't ask for
+    </p>
+    <p>todo: add more here</p>
+  </description>
+
+  <url type="homepage">https://github.com/superwhiskers/layer-cake</url>
+  <url type="bugtracker">https://github.com/superwhiskers/layer-cake/issues</url>
+
+  <custom>
+    <value key="Purism::form_factor">workstation</value>
+  </custom>
+
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+</component>

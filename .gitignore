@@ -1,0 +1,6 @@
+gui/build/
+gui/.fenv/
+gui/.flatpak-builder/
+gui/src/config.rs
+gui/out/
+target/

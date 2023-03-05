@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=@NAME@
+Comment=graphical frontend for the opinionated minecraft launcher you didn't want
+GenericName=Minecraft Launcher
+# translators: do not translate or transliterate this, as it identifies the icon file to use
+Icon=@APP_ID@
+Exec=@PKGNAME@
+Terminal=false
+Type=Application
+StartupNotify=true
+Categories=Game;Simulation;GNOME;GTK;
+# translators: these represent search terms for the application. don't mess with the semicolons and ensure the list ends with one
+Keywords=minecraft;layer;cake;launcher;
+X-Purism-FormFactor=Workstation;
