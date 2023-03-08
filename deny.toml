@@ -16,6 +16,8 @@ allow = [
     "ISC",
     "Zlib",
     "OpenSSL",
+    "CC0-1.0",
+    "BSD-3-Clause",
 ]
 copyleft = "warn"
 default = "deny"

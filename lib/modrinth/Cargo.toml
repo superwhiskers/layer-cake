@@ -13,8 +13,11 @@ http = "0.2"
 hyper-rustls = "0.23"
 tracing = "0.1"
 simd-json = "0.7"
-simd-json-derive = "0.7"
 
 [dependencies.hyper]
 version = "0.14"
 features = ["client", "http2", "http1"]
+
+[dependencies.simd-json-derive]
+version = "0.7"
+default-features = false
