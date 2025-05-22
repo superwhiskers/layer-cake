@@ -17,6 +17,17 @@ serde_with = "3"
 http = "1"
 hyper-rustls = "0.27"
 simd-json = "0.15"
+libc = "0.2"
+thiserror = "1"
+flume = "0.11"
+
+[workspace.dependencies.nix]
+version = "0.26"
+features = ["user", "fs"]
+
+[workspace.dependencies.tokio-stream]
+version = "0.1"
+features = ["fs"]
 
 [workspace.dependencies.sqlx]
 version = "0.8"
