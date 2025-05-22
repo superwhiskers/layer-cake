@@ -1,11 +1,47 @@
 [workspace]
 members = [
-  "gui",
-
-  "lib/core",
-  "lib/modrinth",
-  "lib/mojang",
+  "crates/*"
 ]
+exclude = [
+  "crates/gtk4"
+]
+resolver = "3"
+
+[workspace.dependencies]
+tracing = "0.1"
+async-trait = "0.1"
+rmp-serde = "1"
+typetag = "0.2"
+base64 = "0.22"
+serde_with = "3"
+http = "1"
+hyper-rustls = "0.27"
+simd-json = "0.15"
+
+[workspace.dependencies.sqlx]
+version = "0.8"
+features = ["runtime-tokio", "sqlite"]
+
+[workspace.dependencies.futures]
+version = "0.3"
+default-features = false
+features = ["std"]
+
+[workspace.dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[workspace.dependencies.tokio]
+version = "1"
+features = ["full"]
+
+[workspace.dependencies.hyper]
+version = "1"
+features = ["client", "http2", "http1"]
+
+[workspace.dependencies.simd-json-derive]
+version = "0.16"
+default-features = false
 
 [profile.release]
 opt-level = 3
@@ -13,4 +49,9 @@ codegen-units = 1
 debug = false
 strip = "symbols"
 panic = "abort"
-lto = "fat"
+lto = "thin"
+
+[profile.release-profile]
+inherits = "release"
+debug = true
+strip = false
