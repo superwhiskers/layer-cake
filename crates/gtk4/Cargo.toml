@@ -32,3 +32,6 @@ features = ["release_max_level_info"]
 [dependencies.tracing-subscriber]
 version = "0.3"
 features = ["parking_lot", "env-filter"]
+
+[lints]
+workspace = true

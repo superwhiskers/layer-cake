@@ -15,3 +15,6 @@ tracing.workspace = true
 simd-json.workspace = true
 hyper.workspace = true
 simd-json-derive.workspace = true
+
+[lints]
+workspace = true
