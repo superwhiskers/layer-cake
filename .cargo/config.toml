@@ -1,3 +1,53 @@
+[build]
+rustflags = []
+
+[target.'cfg(target_arch = "x86_64")']
+rustflags = [
+    "-C", "target-cpu=x86-64-v3",
+]
+
+[target.'cfg(all())']
+rustflags = [
+    "-Z", "stack-protector=strong",
+]
+
 [target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-Clink-arg=-fuse-ld=lld", "-Clink-arg=-Wl,--no-rosegment"]
+rustflags = [
+    "-C", "target-cpu=x86-64-v3",
+    "-Z", "stack-protector=strong",
+    "-Z", "cf-protection=full",
+    "-C", "link-arg=-Wl,-z,now",
+    "-C", "link-arg=-Wl,-z,noexecstack",
+    "-C", "link-arg=-Wl,-z,separate-code",
+    # add if dlopen turns out to be unnecessary:
+    # "-C", "link-arg=-Wl,-z,nodlopen",
+]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = [
+    "-Z", "stack-protector=strong",
+    "-Z", "branch-protection=bti,pac-ret,leaf",
+    "-C", "link-arg=-Wl,-z,now",
+    "-C", "link-arg=-Wl,-z,noexecstack",
+    "-C", "link-arg=-Wl,-z,separate-code",
+]
+
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C", "target-cpu=x86-64-v3",
+    "-Z", "stack-protector=strong",
+    "-Z", "cf-protection=full",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-Z", "stack-protector=strong",
+    "-Z", "branch-protection=bti,pac-ret,leaf",
+]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C", "target-cpu=x86-64-v3",
+    "-Z", "stack-protector=strong",
+    "-Z", "control-flow-guard",
+]

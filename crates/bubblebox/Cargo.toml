@@ -9,13 +9,12 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-libc.workspace = true
+rustix.workspace = true
 thiserror.workspace = true
-nix.workspace = true
-futures.workspace = true
-flume.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+libc.workspace = true
+errno.workspace = true
 
 [lints]
 workspace = true
