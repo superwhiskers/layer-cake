@@ -2,7 +2,7 @@ project(
   'layer-cake-gui',
   'rust',
   version: '0.0.0',
-  license: 'GPL-3.0-or-later',
+  license: 'AGPL-3.0-only',
   meson_version: '>= 0.63'
 )
 
@@ -15,9 +15,9 @@ dependency('gtk4', version: '>= 4.8.0')
 dependency('libadwaita-1', version: '>= 1.2.0')
 
 name = 'layer cake'
-base_id = 'io.github.superwhiskers.layer_cake'
+base_id = 'systems.errno.layer_cake'
 app_id = base_id
-path_id = '/io/github/superwhiskers/layer-cake'
+path_id = '/systems/errno/layer-cake'
 datadir = get_option('prefix') / get_option('datadir')
 bindir = get_option('prefix') / get_option('bindir')
 

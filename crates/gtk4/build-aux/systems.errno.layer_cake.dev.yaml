@@ -1,4 +1,4 @@
-app-id: "io.github.superwhiskers.layer_cake.dev"
+app-id: "systems.errno.layer_cake.dev"
 runtime: "org.gnome.Platform"
 runtime-version: "master"
 sdk: "org.gnome.Sdk"

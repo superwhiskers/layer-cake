@@ -1,4 +1,6 @@
-# dev instructions for the gui
+# dev instructions for the gtk4 gui
+
+NOTE: this is out of date.
 
 setting up the development environment for the gui is somewhat nonobvious. here are instructions for this
 
@@ -61,19 +63,13 @@ flatpak install --user gnome-nightly org.gnome.Sdk//master org.gnome.Platform//m
 
 ## rust
 flatpak install --user flathub org.freedesktop.Sdk.Extension.rust-stable//22.08
-
-## openjdk17
-flatpak install --user flathub org.freedesktop.Sdk.Extension.openjdk17//22.08
-
-## openjdk8
-flatpak install --user flathub org.freedesktop.Sdk.Extension.openjdk8//22.08
 ```
 
 ## setting up fenv
 
 ```
 # set up the flatpak environment
-fenv gen build-aux/io.github.superwhiskers.layer_cake.dev.yaml
+fenv gen build-aux/systems.errno.layer_cake.dev.yaml
 
 # initialize the meson build directory
 fenv exec -- meson setup --prefix=/app build

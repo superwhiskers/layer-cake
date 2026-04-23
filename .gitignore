@@ -4,3 +4,4 @@ gui/.flatpak-builder/
 gui/src/config.rs
 gui/out/
 target/
+.direnv/
