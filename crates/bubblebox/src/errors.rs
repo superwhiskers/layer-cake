@@ -41,6 +41,14 @@ pub enum Error {
     #[error("An invalid state occurred")]
     InvalidState,
 
+    /// The given path was not to a file.
+    #[error("The given path was not to a file")]
+    NotAFile,
+
+    /// The given path was not to a directory.
+    #[error("The given path was not to a directory")]
+    NotADirectory,
+
     /// An I/O error occurred.
     #[error("An I/O error occurred")]
     Io(#[from] IoError),

@@ -8,7 +8,7 @@
 #![feature(const_trait_impl)]
 #![feature(raw_os_error_ty)]
 #![feature(const_default)]
-#![feature(derive_const)]
+#![feature(trusted_len)]
 
 //! Painless cross-platform sandboxing.
 

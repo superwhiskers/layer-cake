@@ -14,7 +14,6 @@
 //!
 //! [systemd]: https://systemd.io
 
-//TODO: add a "null" backend if the user doesn't want cgroups
 //TODO: look into talking to elogind to acquire a cgroups instance, if this
 //      would work at all
 //TODO: system scoped cgroups on systemd? this could be useful but also
@@ -763,6 +762,25 @@ pub unsafe trait Backend {
     fn teardown(&self, state: Self::State) -> Result<(), Error> {
         Ok(())
     }
+}
+
+/// Null backend that doesn't initialize cgroups at all.
+#[derive(Clone, Debug)]
+pub struct NullCgroups;
+
+impl Cgroups<NullCgroups> {
+    /// Don't create a cgroups hierarchy.
+    pub fn new_null(policy: Policy) -> Self {
+        Self {
+            inner: NullCgroups,
+            policy,
+        }
+    }
+}
+
+//SAFETY: we don't implementy any of the hooks at all
+unsafe impl Backend for NullCgroups {
+    type State = ();
 }
 
 /// [`Cgroups`] instantiated from an [`OwnedFd`] representing a directory in the

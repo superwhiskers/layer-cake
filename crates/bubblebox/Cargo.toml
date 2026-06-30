@@ -17,7 +17,6 @@ libc.workspace = true
 linux-raw-sys.workspace = true
 itoa.workspace = true
 rkyv.workspace = true
-scopeguard.workspace = true
 
 [dependencies.dbus]
 workspace = true

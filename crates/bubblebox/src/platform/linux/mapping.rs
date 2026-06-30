@@ -15,24 +15,25 @@ use rustix::{
     fs::{Gid, Mode},
     mount::MountAttrFlags,
 };
+use std::ffi::OsStr;
 
-use crate::path::Host;
+use super::path::{HostDirectoryRef, HostFileRef};
 
 /// Source of a mapping.
 #[derive(Clone, Debug)]
-pub struct Source<'a> {
+pub struct Source<'fd> {
     /// The mapping's source.
-    pub(crate) inner: SourceInner<'a>,
+    pub(crate) inner: SourceInner<'fd>,
 }
 
-impl<'a> Source<'a> {
+impl<'fd> Source<'fd> {
     #![expect(
         clippy::missing_const_for_fn,
         reason = "constructors taking BorrowedFd, Uid, or Gid are intentionally non-const"
     )]
 
     /// Create a new source from the given inner value.
-    const fn new(inner: SourceInner<'a>) -> Self {
+    const fn new(inner: SourceInner<'fd>) -> Self {
         Self { inner }
     }
 
@@ -45,78 +46,120 @@ impl<'a> Source<'a> {
     /// Read-only mapping of a file from the host to the guest, preserving
     /// ownership and permissions.
     #[must_use]
-    pub const fn read_only(path: Host, is_optional: bool) -> Self {
-        Self::new(SourceInner::Bind(BindMount::Path {
-            path,
+    pub fn read_only_file(fd: HostFileRef<'fd>) -> Self {
+        let (dirfd, name, fd) = fd.into_parts();
+        Self::new(SourceInner::Bind(BindMount::File {
+            dirfd,
+            name,
+            fd,
             attributes: MountAttributes {
                 read_only: true,
                 no_setuid: true,
                 no_devices: true,
-                ..Default::default()
+                no_execution: false,
+                no_symlink_following: false,
             },
-            is_optional,
-            is_recursive: false,
         }))
     }
 
     /// Read-write mapping of a file from the host to the guest, preserving
     /// ownership and permissions.
     #[must_use]
-    pub const fn read_write(path: Host, is_optional: bool) -> Self {
-        Self::new(SourceInner::Bind(BindMount::Path {
-            path,
+    pub fn read_write_file(fd: HostFileRef<'fd>) -> Self {
+        let (dirfd, name, fd) = fd.into_parts();
+        Self::new(SourceInner::Bind(BindMount::File {
+            dirfd,
+            name,
+            fd,
             attributes: MountAttributes {
+                read_only: false,
                 no_setuid: true,
                 no_devices: true,
-                ..Default::default()
+                no_execution: false,
+                no_symlink_following: false,
             },
-            is_optional,
-            is_recursive: false,
         }))
     }
 
-    /// Read-write mapping of a device node or directory of device nodes from
-    /// the host to the guest, preserving ownership and permissions.
+    /// Read-write mapping of a device file from the host to the guest,
+    /// preserving ownership and permissions.
     #[must_use]
-    pub const fn device(path: Host, is_optional: bool) -> Self {
-        Self::new(SourceInner::Bind(BindMount::Path {
-            path,
+    pub fn device_file(fd: HostFileRef<'fd>) -> Self {
+        let (dirfd, name, fd) = fd.into_parts();
+        Self::new(SourceInner::Bind(BindMount::File {
+            dirfd,
+            name,
+            fd,
             attributes: MountAttributes {
+                read_only: false,
                 no_setuid: true,
-                ..Default::default()
+                no_devices: false,
+                no_execution: false,
+                no_symlink_following: false,
             },
-            is_optional,
-            is_recursive: false,
         }))
     }
 
     /// Mapping of a file from the host to the guest, preserving ownership and
     /// permissions.
     #[must_use]
-    pub const fn bind(
-        path: Host,
+    pub fn bind_file(
+        fd: HostFileRef<'fd>,
         attributes: MountAttributes,
-        is_optional: bool,
-        is_recursive: bool,
     ) -> Self {
-        Self::new(SourceInner::Bind(BindMount::Path {
-            path,
+        let (dirfd, name, fd) = fd.into_parts();
+        Self::new(SourceInner::Bind(BindMount::File {
+            dirfd,
+            name,
+            fd,
             attributes,
-            is_optional,
-            is_recursive,
         }))
     }
 
-    /// Mapping of a file from the host to the guest using a file descriptor,
-    /// preserving ownership and permissions.
+    /// Read-only mapping of a directory from the host to the guest, preserving
+    /// ownership and permissions.
     #[must_use]
-    pub fn bind_fd(
-        fd: BorrowedFd<'a>,
+    pub fn read_only_directory(fd: HostDirectoryRef<'fd>) -> Self {
+        Self::new(SourceInner::Bind(BindMount::Directory {
+            fd: fd.into_fd(),
+            attributes: MountAttributes {
+                read_only: true,
+                no_setuid: true,
+                no_devices: true,
+                no_execution: false,
+                no_symlink_following: false,
+            },
+            is_recursive: false,
+        }))
+    }
+
+    /// Read-write mapping of a directory from the host to the guest, preserving
+    /// ownership and permissions.
+    #[must_use]
+    pub fn read_write_directory(fd: HostDirectoryRef<'fd>) -> Self {
+        Self::new(SourceInner::Bind(BindMount::Directory {
+            fd: fd.into_fd(),
+            attributes: MountAttributes {
+                read_only: false,
+                no_setuid: true,
+                no_devices: true,
+                no_execution: false,
+                no_symlink_following: false,
+            },
+            is_recursive: false,
+        }))
+    }
+
+    /// Mapping of a directory from the host to the guest, preserving ownership
+    /// and permissions.
+    #[must_use]
+    pub fn bind_directory(
+        fd: HostDirectoryRef<'fd>,
         attributes: MountAttributes,
         is_recursive: bool,
     ) -> Self {
-        Self::new(SourceInner::Bind(BindMount::Fd {
-            fd,
+        Self::new(SourceInner::Bind(BindMount::Directory {
+            fd: fd.into_fd(),
             attributes,
             is_recursive,
         }))
@@ -132,10 +175,11 @@ impl<'a> Source<'a> {
             subset,
             namespace: ProcPidNamespace::Guest,
             attributes: MountAttributes {
+                read_only: false,
                 no_setuid: true,
                 no_devices: true,
                 no_execution: true,
-                ..Default::default()
+                no_symlink_following: false,
             },
         })
     }
@@ -146,7 +190,7 @@ impl<'a> Source<'a> {
     pub fn proc_with_pid_namespace(
         hidepid: ProcHidepid,
         subset: ProcSubset,
-        namespace: BorrowedFd<'a>,
+        namespace: BorrowedFd<'fd>,
     ) -> Self {
         Self::new(SourceInner::Procfs {
             hidepid,
@@ -154,10 +198,11 @@ impl<'a> Source<'a> {
             subset,
             namespace: ProcPidNamespace::Fd(namespace),
             attributes: MountAttributes {
+                read_only: false,
                 no_setuid: true,
                 no_devices: true,
                 no_execution: true,
-                ..Default::default()
+                no_symlink_following: false,
             },
         })
     }
@@ -177,10 +222,11 @@ impl<'a> Source<'a> {
             subset,
             namespace: ProcPidNamespace::Guest,
             attributes: MountAttributes {
+                read_only: false,
                 no_setuid: true,
                 no_devices: true,
                 no_execution: true,
-                ..Default::default()
+                no_symlink_following: false,
             },
         })
     }
@@ -194,7 +240,7 @@ impl<'a> Source<'a> {
         hidepid: ProcHidepid,
         gid: Gid,
         subset: ProcSubset,
-        namespace: BorrowedFd<'a>,
+        namespace: BorrowedFd<'fd>,
     ) -> Self {
         Self::new(SourceInner::Procfs {
             hidepid,
@@ -202,10 +248,11 @@ impl<'a> Source<'a> {
             subset,
             namespace: ProcPidNamespace::Fd(namespace),
             attributes: MountAttributes {
+                read_only: false,
                 no_setuid: true,
                 no_devices: true,
                 no_execution: true,
-                ..Default::default()
+                no_symlink_following: false,
             },
         })
     }
@@ -215,10 +262,11 @@ impl<'a> Source<'a> {
     pub const fn mqueue() -> Self {
         Self::new(SourceInner::Mqueue {
             attributes: MountAttributes {
+                read_only: false,
                 no_setuid: true,
                 no_devices: true,
                 no_execution: true,
-                ..Default::default()
+                no_symlink_following: false,
             },
         })
     }
@@ -302,9 +350,11 @@ impl<'a> Source<'a> {
             owner: Owner::User,
             permissions,
             attributes: MountAttributes {
+                read_only: false,
                 no_setuid: true,
                 no_devices: true,
-                ..Default::default()
+                no_execution: false,
+                no_symlink_following: false,
             },
         })
     }
@@ -333,11 +383,11 @@ impl<'a> Source<'a> {
 //      give the user the option to make it themselves
 #[non_exhaustive]
 #[derive(Clone, Debug)]
-pub(crate) enum SourceInner<'a> {
+pub(crate) enum SourceInner<'fd> {
     /// A bind-mount sourced from the host.
     ///
     /// Preserves the permissions and ownership of the source.
-    Bind(BindMount<'a>),
+    Bind(BindMount<'fd>),
 
     /// `proc(5)` filesystem mount.
     Procfs {
@@ -353,7 +403,7 @@ pub(crate) enum SourceInner<'a> {
         subset: ProcSubset,
 
         /// Pid namespace for the procfs to use to translate pids.
-        namespace: ProcPidNamespace<'a>,
+        namespace: ProcPidNamespace<'fd>,
 
         /// Attributes to apply to the mount.
         attributes: MountAttributes,
@@ -412,26 +462,31 @@ pub(crate) struct File {
 /// Mapping using a bind mount from the host.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
-pub(crate) enum BindMount<'a> {
-    /// Bind mount sourced from a path.
-    Path {
-        /// Host path to mount within the guest.
-        path: Host,
+pub(crate) enum BindMount<'fd> {
+    /// Bind mount of a file.
+    File {
+        /// File descriptor representing the parent directory of the file to
+        /// mount within the guest.
+        dirfd: BorrowedFd<'fd>,
+
+        /// Name of the file underneath the dirfd to mount within the guest.
+        name: &'fd OsStr,
+
+        /// File descriptor representing the file to mount within the guest.
+        ///
+        /// This is used to verify that we actually mounted the intended file
+        /// after the mount has been moved to the guest, not to mount it.
+        fd: BorrowedFd<'fd>,
 
         /// Attributes to bind-mount the path with.
         attributes: MountAttributes,
-
-        /// Whether the source path missing should be ignored.
-        is_optional: bool,
-
-        /// Whether the mount is recursive or not.
-        is_recursive: bool,
     },
 
-    /// Bind mount sourced from a path file descriptor.
-    Fd {
-        /// File descriptor representing the path to mount within the guest.
-        fd: BorrowedFd<'a>,
+    /// Bind mount of a directory.
+    Directory {
+        /// File descriptor representing the directory to mount within the
+        /// guest.
+        fd: BorrowedFd<'fd>,
 
         /// Attributes to bind-mount the path with.
         attributes: MountAttributes,
@@ -442,8 +497,7 @@ pub(crate) enum BindMount<'a> {
 }
 
 /// Attributes applied to a mount.
-//NOTE: should we just use [`MountAttrFlags`] instead of this custom structure?
-#[derive_const(Default)]
+//TODO: should we just use [`MountAttrFlags`] instead of this custom structure?
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct MountAttributes {
     /// Make the mount read-only.
@@ -460,6 +514,18 @@ pub struct MountAttributes {
 
     /// Don't follow symbolic links on this filesystem.
     no_symlink_following: bool,
+}
+
+const impl Default for MountAttributes {
+    fn default() -> Self {
+        Self {
+            read_only: true,
+            no_setuid: true,
+            no_devices: true,
+            no_execution: true,
+            no_symlink_following: true,
+        }
+    }
 }
 
 impl MountAttributes {

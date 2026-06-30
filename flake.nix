@@ -49,5 +49,19 @@
           };
         }
       );
+      packages = forAllSystems (
+        { pkgs, ... }: {
+          linuxHeaders = pkgs.linuxHeaders.overrideAttrs (
+            final: _: {
+              version = "7.1.2";
+              src = pkgs.fetchurl {
+                url = "mirror://kernel/linux/kernel/v${pkgs.lib.versions.major final.version}.x/linux-${final.version}.tar.xz";
+                hash = "sha256-NxmMk3J74kfJ+1MJu4bNXklsYeUyLNjE7KlHa7C1iD8=";
+              };
+              patches = [ ];
+            }
+          );
+        }
+      );
     };
 }

@@ -12,12 +12,12 @@
 //      subuid/subgid delegations
 //TODO: add selinux support through file label options for mounts, executable
 //      labels for the program
-//TODO: use `FSMOUNT_NAMESPACE` instead of `MOVE_MOUNT_BENEATH` to swap root
-//      in the sandbox
 //TODO: add support for io_uring syscall denylists using the new api introduced
 //      in kernel 7.0
 //TODO: write an extension trait for rustix's `Errno` that allows you to wrap
 //      the errno with a syscall name (stored in an enum) for provenance
+//TODO: in child code, use `Vec::push_within_capacity` to ensure we don't
+//      exceed the capacity and allocate
 
 use linux_raw_sys::general as linux_general;
 use rkyv::{
@@ -46,15 +46,16 @@ use rustix::{
 use seccompiler::SeccompFilter;
 use std::{
     collections::BTreeMap,
-    ffi,
+    ffi::{self, OsStr},
     io::{self, Read, Write},
     mem::ManuallyDrop,
+    os::unix::ffi::OsStrExt,
     panic,
 };
 
 use super::{
     cgroups::{self, Cgroups},
-    mapping::{File, Source},
+    mapping::{File, MountAttributes, Source},
     netlink,
     util::{self, FdPolicy, FdReadWrite, ResolvedMount, TimeOffset},
 };
@@ -244,16 +245,18 @@ where
         // this needs to be allocated all the way up here because we can't
         // allocate once we `clone3(2)`.
         let resolved_mappings = Vec::with_capacity(self.mappings.len());
+        let namespace_fd_scratch_space =
+            Vec::with_capacity(self.mappings.len());
 
+        //FIXME: send success over this too. work out how to do this
         let (host_pipe, guest_pipe) =
             rustix::pipe::pipe_with(PipeFlags::CLOEXEC)?;
 
-        // these three are always unshared. see the documentation for
-        // `Namespaces` for more details. the third is to ensure we are handed
-        // a pidfd to the child process.
-        let mut clone_flags = linux_general::CLONE_NEWNS
-            | linux_general::CLONE_NEWUSER
-            | linux_general::CLONE_PIDFD;
+        // this is always unshared. see the documentation for `Namespaces` for
+        // more details. the third is to ensure we are handed a pidfd to
+        // the child process.
+        let mut clone_flags =
+            linux_general::CLONE_NEWUSER | linux_general::CLONE_PIDFD;
 
         if !self.namespaces.ipc.is_shared() {
             clone_flags |= linux_general::CLONE_NEWIPC;
@@ -375,6 +378,8 @@ where
         //NOTE: this is where the child process begins
 
         let resolved_mappings = ManuallyDrop::new(resolved_mappings);
+        let namespace_fd_scratch_space =
+            ManuallyDrop::new(namespace_fd_scratch_space);
 
         //SAFETY: we're in the child, we own this fd now
         let guest_pipe =
@@ -382,12 +387,12 @@ where
 
         panic::always_abort();
 
-        //SAFETY: by the preconditions of this method, this call is safe
         let Err(e) = self.guest_post_clone(
             child_callback,
             cgroups_state,
             parent_pidfd,
             resolved_mappings,
+            namespace_fd_scratch_space,
             host_uid,
             host_gid,
         );
@@ -478,15 +483,29 @@ where
     ///
     /// This method errors if the namespace setup fails.
     #[inline(always)]
-    fn guest_post_clone<'b>(
+    fn guest_post_clone<'b, 'c>(
         &'b self,
         child_callback: impl FnOnce() -> Result<!, ChildError>,
         cgroups_state: CgroupsBackend::State,
         parent_pidfd: Option<OwnedFd>,
         mut resolved_mappings: ManuallyDrop<Vec<ResolvedMount<'b>>>,
+        mut namespace_fd_scratch_space: ManuallyDrop<
+            Vec<(
+                usize,
+                OwnedFd,
+                &'b Guest,
+                Option<(&'c OsStr, BorrowedFd<'c>)>,
+                MountAttributes,
+                bool,
+            )>,
+        >,
         host_uid: Uid,
         host_gid: Gid,
-    ) -> Result<!, ChildError> {
+    ) -> Result<!, ChildError>
+    where
+        'a: 'c,
+        'b: 'c,
+    {
         let guest_uid = self.uid.unwrap_or(host_uid);
         let guest_gid = self.gid.unwrap_or(host_gid);
 
@@ -526,6 +545,15 @@ where
         unsafe {
             rustix::thread::unshare_unsafe(UnshareFlags::NEWCGROUP)?;
         }
+
+        //NOTE: we track the number of resolved mappings as rust can
+        //      over-allocate a vector made with `Vec::with_capacity`, so we
+        //      cannot just blindly set it to its capacity
+        let mut n_resolved = util::resolve_bind_mappings(
+            &self.mappings,
+            &mut resolved_mappings,
+            &mut namespace_fd_scratch_space,
+        )?;
 
         let guest_proc_fs_fd =
             rustix::mount::fsopen("proc", FsOpenFlags::FSOPEN_CLOEXEC)?;
@@ -596,11 +624,17 @@ where
             )
         })?;
 
-        util::resolve_mappings(
-            &host_root_fd,
+        n_resolved += util::resolve_nonbind_mappings(
             &self.mappings,
             &mut resolved_mappings,
         )?;
+
+        //NOTE: we need a better error here
+        (n_resolved == self.mappings.len()).ok_or(ChildError::InvalidState)?;
+
+        //SAFETY: we just checked the length matches the number of mappings
+        //        exactly
+        unsafe { resolved_mappings.set_len(n_resolved) };
 
         let guest_root_fs_fd =
             rustix::mount::fsopen("tmpfs", FsOpenFlags::FSOPEN_CLOEXEC)?;
@@ -634,7 +668,7 @@ where
 
                     match rustix::fs::statx(
                         &parent_fd,
-                        file_name,
+                        file_name.as_bytes(),
                         AtFlags::SYMLINK_NOFOLLOW,
                         StatxFlags::TYPE,
                     ) {
@@ -648,7 +682,7 @@ where
                         Err(Errno::NOENT) => {
                             rustix::fs::mkdirat(
                                 &parent_fd,
-                                file_name,
+                                file_name.as_bytes(),
                                 //NOTE: 0o755
                                 Mode::RWXU
                                     | Mode::RGRP
@@ -664,7 +698,7 @@ where
                         fd,
                         "",
                         &parent_fd,
-                        file_name,
+                        file_name.as_bytes(),
                         MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
                     )?;
                 }
@@ -676,7 +710,7 @@ where
 
                     match rustix::fs::statx(
                         &parent_fd,
-                        file_name,
+                        file_name.as_bytes(),
                         AtFlags::SYMLINK_NOFOLLOW,
                         StatxFlags::TYPE,
                     ) {
@@ -692,7 +726,7 @@ where
                             drop(util::retry_on_interrupt!({
                                 rustix::fs::openat2(
                                     &parent_fd,
-                                    file_name,
+                                    file_name.as_bytes(),
                                     OFlags::CREATE | OFlags::WRONLY,
                                     Mode::RUSR
                                         | Mode::WUSR
@@ -709,7 +743,7 @@ where
                         fd,
                         "",
                         &parent_fd,
-                        file_name,
+                        file_name.as_bytes(),
                         MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
                     )?;
                 }
@@ -728,7 +762,7 @@ where
                     if !matches!(
                         rustix::fs::statx(
                             &parent_fd,
-                            file_name,
+                            file_name.as_bytes(),
                             AtFlags::SYMLINK_NOFOLLOW,
                             StatxFlags::empty(),
                         ),
@@ -742,7 +776,7 @@ where
                     FdReadWrite::new(util::retry_on_interrupt!({
                         rustix::fs::openat2(
                             &parent_fd,
-                            file_name,
+                            file_name.as_bytes(),
                             OFlags::CREATE | OFlags::RDWR,
                             *permissions,
                             ResolveFlags::BENEATH,
@@ -761,7 +795,7 @@ where
                     if !matches!(
                         rustix::fs::statx(
                             &parent_fd,
-                            file_name,
+                            file_name.as_bytes(),
                             AtFlags::SYMLINK_NOFOLLOW,
                             StatxFlags::empty(),
                         ),
@@ -771,7 +805,11 @@ where
                         Err(ChildError::DestinationExisted)?;
                     }
 
-                    rustix::fs::mkdirat(&parent_fd, file_name, *permissions)?;
+                    rustix::fs::mkdirat(
+                        &parent_fd,
+                        file_name.as_bytes(),
+                        *permissions,
+                    )?;
                 }
             }
         }
@@ -1027,26 +1065,33 @@ mod test {
             Resource, SystemdState,
         },
         mapping::{ProcHidepid, ProcSubset},
+        path::{HostDirectory, HostFile},
     };
-    use crate::path::Host;
 
     #[test]
     fn simple_policy() {
+        let bin_directory = HostDirectory::open(
+            "/home/superwhiskers/documents/rust/layer-cake/result/bin",
+        )
+        .unwrap();
+        let hosts_file =
+            HostFile::open("/nix/store/9n0d1v9nli13hh4yrjxf6qkcrxws0ahv-hosts")
+                .unwrap();
         let mappings = BTreeMap::from([
             (
                 "/bin".try_into().unwrap(),
-                Source::read_only(
-                    Host::new_using_fs("/home/superwhiskers/documents/rust/layer-cake/result/bin")
-                        .unwrap(),
-                    false,
-                ),
+                Source::read_only_directory(bin_directory.as_borrowed()),
+            ),
+            (
+                "/etc/hosts".try_into().unwrap(),
+                Source::read_only_file(hosts_file.as_borrowed()),
             ),
             (
                 "/proc".try_into().unwrap(),
                 Source::proc(ProcHidepid::Ptraceable, ProcSubset::Pid),
             ),
             (
-                "/amogus".try_into().unwrap(),
+                "/etc".try_into().unwrap(),
                 Source::tmpfs(None, Mode::RUSR | Mode::WUSR | Mode::XUSR),
             ),
         ]);

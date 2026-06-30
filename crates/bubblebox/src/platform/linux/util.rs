@@ -7,34 +7,42 @@
 use linux_raw_sys::general as linux_general;
 use rustix::{
     fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
-    fs::{AtFlags, FileType, Gid, Mode, OFlags, ResolveFlags, StatxFlags, Uid},
+    fs::{CWD, Gid, Mode, OFlags, ResolveFlags, Uid},
     io::Errno,
-    mount::{FsMountFlags, FsOpenFlags, MountAttrFlags},
+    mount::{FsMountFlags, FsOpenFlags},
+    path::Arg,
     process::{RawGid, RawUid},
-    thread::CapabilitySet,
+    thread::{CapabilitySet, LinkNameSpaceType, UnshareFlags},
 };
 use std::{
     cmp,
     collections::{BTreeMap, HashSet},
-    ffi,
-    ffi::OsStr,
+    ffi::{self, OsStr},
     io,
+    iter::TrustedLen,
     mem::{self, MaybeUninit},
+    os::unix::ffi::OsStrExt,
     ptr,
 };
 
-use super::mapping::{
-    BindMount, File, Owner, ProcHidepid, ProcPidNamespace, ProcSubset, Source,
-    SourceInner,
+use super::{
+    mapping::{
+        BindMount, File, MountAttributes, Owner, ProcHidepid, ProcPidNamespace,
+        ProcSubset, Source, SourceInner,
+    },
+    path as linux_path,
 };
 use crate::{
     errors::{ChildError, Error},
-    path::{Guest, Host},
+    path::Guest,
 };
 
 /// Exclusive upper bound on the bit offset of a represented capability in a
 /// [`CapabilitySet`].
 const MAX_LAST_CAP: u64 = u64::BITS as u64;
+
+/// What would be `linux_general::OPEN_TREE_NAMESPACE` if it had it.
+pub const OPEN_TREE_NAMESPACE: u32 = 1 << 1;
 
 /// Wrapper for an [`OwnedFd`] that implements [`io::Read`] and [`io::Write`].
 pub struct FdReadWrite(OwnedFd);
@@ -115,7 +123,9 @@ pub fn open_parent_in_root(
             root_fd.as_fd(),
             path.as_ref()
                 .parent()
-                .ok_or(ChildError::PathLackedParentDir)?,
+                .ok_or(ChildError::PathLackedParentDir)?
+                .as_os_str()
+                .as_bytes(),
             OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
             Mode::empty(),
             ResolveFlags::IN_ROOT
@@ -392,7 +402,10 @@ pub fn is_valid_mapping_tree(mappings: &BTreeMap<Guest, Source<'_>>) -> bool {
 /// File descriptors are marked close-on-exec if no policy is specified.
 #[derive(Clone, Debug)]
 pub enum FdPolicy<'a> {
-    /// Preserve the file descriptor from the parent's environment.
+    /// Preserve the specified file descriptor as-is.
+    ///
+    /// This does not clear the close-on-exec flag of the specified file
+    /// descriptor if it is set.
     Preserve,
 
     /// Remap to the specified file descriptor with `dup3(2)`.
@@ -874,85 +887,42 @@ pub enum ResolvedMount<'a> {
     },
 }
 
-/// Resolve an enumerable set of [`Mapping`]s to synthetic files, empty
-/// directories, and detached mount objects.
+/// Resolve an enumerable set of [`Guest`], [`Source`] pairs to synthetic files,
+/// empty directories, and detached mount objects for mappings other than bind
+/// mappings from the host.
 ///
-/// The mappings are resolved to a given mutable vector, which must have a
-/// capacity that is at least the number of mappings given to be resolved.
+/// # Notes
+///
+/// This function initializes all slots in the spare capacity of `resolved`
+/// where non-bind mounts would go. After calling this function, those slots are
+/// guaranteed to be initialized. This function returns the number of slots
+/// initialized for accounting purposes.
 ///
 /// # Errors
 ///
-/// This function errors if:
-/// - Resolving a mount object using `resolve_path_to_mount` fails.
-/// - Opening and interacting with filesystem configuration objects for a mapped
-///   filesystem fails.
-pub fn resolve_mappings<'a, I>(
-    host_root_fd: impl AsFd,
+/// This function errors if opening and interacting with filesystem
+/// configuration objects for a mapped filesystem fails.
+pub fn resolve_nonbind_mappings<'a, I>(
     mappings: I,
     resolved: &mut Vec<ResolvedMount<'a>>,
-) -> Result<(), ChildError>
+) -> Result<usize, ChildError>
 where
     I: IntoIterator<Item = (&'a Guest, &'a Source<'a>)>,
-    I::IntoIter: ExactSizeIterator,
+    I::IntoIter: TrustedLen,
 {
-    #![expect(
-        clippy::panic_in_result_fn,
-        reason = "we use assertions to defensively check for user error"
-    )]
+    let mappings = mappings.into_iter().enumerate();
 
-    let mappings = mappings.into_iter();
+    //NOTE: same comment as in `resolve_bind_mappings`
+    (resolved.len() == 0).ok_or(ChildError::InvalidState)?;
+    (resolved.capacity()
+        >= mappings.size_hint().1.ok_or(ChildError::BufferTooSmall)?)
+    .ok_or(ChildError::BufferTooSmall)?;
 
-    assert!(
-        resolved.capacity() >= mappings.len(),
-        "the buffer for resolved mappings must have at least as much capacity as there are mappings"
-    );
+    let resolved = resolved.spare_capacity_mut();
 
-    //NOTE: could predicate this on debug. this is a bit defensive
-    resolved.clear();
-
-    for (destination, source) in mappings {
-        match &source.inner {
-            SourceInner::Bind(BindMount::Path {
-                path,
-                attributes,
-                is_optional,
-                is_recursive,
-            }) => {
-                let path_fd = match retry_on_interrupt!({
-                    rustix::fs::openat2(
-                        host_root_fd.as_fd(),
-                        path.as_ref(),
-                        OFlags::PATH | OFlags::CLOEXEC,
-                        Mode::empty(),
-                        ResolveFlags::IN_ROOT
-                            | ResolveFlags::NO_MAGICLINKS
-                            | ResolveFlags::NO_SYMLINKS,
-                    )
-                }) {
-                    Ok(fd) => fd,
-                    Err(Errno::NOENT) if *is_optional => continue,
-                    e @ Err(_) => e?,
-                };
-
-                resolved.push(resolve_path_fd_to_mount(
-                    path_fd.as_fd(),
-                    attributes.into_mount_attr(),
-                    destination,
-                    *is_recursive,
-                )?);
-            }
-            SourceInner::Bind(BindMount::Fd {
-                fd,
-                attributes,
-                is_recursive,
-            }) => {
-                resolved.push(resolve_path_fd_to_mount(
-                    fd.as_fd(),
-                    attributes.into_mount_attr(),
-                    destination,
-                    *is_recursive,
-                )?);
-            }
+    let mut n_non_binds = 0;
+    for (i, (destination, source)) in mappings {
+        let resolved_mount = match &source.inner {
             SourceInner::Procfs {
                 hidepid,
                 gid,
@@ -994,7 +964,7 @@ where
                 }
 
                 rustix::mount::fsconfig_create_exclusive(&fs_fd)?;
-                resolved.push(ResolvedMount::Fd {
+                ResolvedMount::Fd {
                     fd: rustix::mount::fsmount(
                         fs_fd,
                         FsMountFlags::FSMOUNT_CLOEXEC,
@@ -1002,7 +972,7 @@ where
                     )?,
                     destination,
                     is_directory: true,
-                });
+                }
             }
             SourceInner::Mqueue { attributes } => {
                 let fs_fd = rustix::mount::fsopen(
@@ -1011,7 +981,7 @@ where
                 )?;
 
                 rustix::mount::fsconfig_create_exclusive(&fs_fd)?;
-                resolved.push(ResolvedMount::Fd {
+                ResolvedMount::Fd {
                     fd: rustix::mount::fsmount(
                         fs_fd,
                         FsMountFlags::FSMOUNT_CLOEXEC,
@@ -1019,17 +989,17 @@ where
                     )?,
                     destination,
                     is_directory: true,
-                });
+                }
             }
             SourceInner::File(file) => {
-                resolved.push(ResolvedMount::File { file, destination });
+                ResolvedMount::File { file, destination }
             }
             SourceInner::EmptyDirectory { owner, permissions } => {
-                resolved.push(ResolvedMount::Directory {
+                ResolvedMount::Directory {
                     owner: *owner,
                     permissions: *permissions,
                     destination,
-                });
+                }
             }
             SourceInner::Tmpfs {
                 size,
@@ -1044,7 +1014,11 @@ where
                 //let mut buffer = itoa::Buffer::new();
 
                 if let Some(size) = size {
-                    rustix::mount::fsconfig_set_string(&fs_fd, "size", size)?;
+                    rustix::mount::fsconfig_set_string(
+                        &fs_fd,
+                        "size",
+                        size.as_str(),
+                    )?;
                 }
 
                 //TODO: uncomment when newuidmap/newgidmap or
@@ -1077,7 +1051,7 @@ where
 
                 rustix::mount::fsconfig_create_exclusive(&fs_fd)?;
 
-                resolved.push(ResolvedMount::Fd {
+                ResolvedMount::Fd {
                     fd: rustix::mount::fsmount(
                         fs_fd,
                         FsMountFlags::FSMOUNT_CLOEXEC,
@@ -1085,88 +1059,258 @@ where
                     )?,
                     destination,
                     is_directory: true,
-                });
+                }
             }
-        }
+            //NOTE: these are handled separately
+            SourceInner::Bind(_) => continue,
+        };
+
+        //SAFETY: we've ensured at the top of this function that there is
+        //        enough space
+        let _ = unsafe { resolved.get_unchecked_mut(i) }.write(resolved_mount);
+        n_non_binds += 1;
     }
 
-    Ok(())
+    Ok(n_non_binds)
 }
 
-/// Resolve a path file descriptor to a mount object.
+/// Creates mount namespaces for each of the bind mounts and enters them to
+/// create detached mounts.
+///
+/// It is necessary for this to be done separate from synthetic mounts due to
+/// namespace rules. This function writes to the capacity of `resolved` the
+/// resolved bind mounts and no others.
+///
+/// # Notes
+///
+/// This function initializes all slots in the spare capacity of `resolved`
+/// where bind mounts would go. After calling this function, those slots are
+/// guaranteed to be initialized. This function returns the number of slots
+/// initialized for accounting purposes.
 ///
 /// # Errors
 ///
-/// This function errors if opening a detached mount object for the path fails,
-/// or if checking if the path was a directory fails.
-pub fn resolve_path_fd_to_mount<'a, 'b>(
-    path_fd: BorrowedFd<'a>,
-    mount_attr_set: u32,
-    destination: &'b Guest,
-    is_recursive: bool,
-) -> Result<ResolvedMount<'b>, ChildError> {
-    let mount_attr = linux_general::mount_attr {
-        attr_set: mount_attr_set.into(),
-        attr_clr: 0,
-        propagation: 0,
-        userns_fd: 0,
-    };
+/// This function errors if creating new mount namespaces or entering them
+/// sequentially to create detached mount objects fails.
+pub fn resolve_bind_mappings<'a, 'b, I>(
+    mappings: I,
+    resolved: &mut Vec<ResolvedMount<'a>>,
+    namespace_fd_scratch_space: &mut Vec<(
+        // the index into the resolved mapping
+        //
+        // this is necessary because we want to be able to keep the in-order
+        // traversal that a btreemap provides for our mounts
+        usize,
+        // owned fd representing the generated namespace
+        OwnedFd,
+        // destination of the mount
+        &'a Guest,
+        // file to construct the detached mount from and the fd to verify it,
+        // if this is a file bind mount
+        Option<(&'b OsStr, BorrowedFd<'b>)>,
+        // mount attributes applied to the detached mount
+        MountAttributes,
+        // whether or not this is a recursive mount
+        bool,
+    )>,
+) -> Result<usize, ChildError>
+where
+    I: IntoIterator<Item = (&'a Guest, &'a Source<'a>)>,
+    I::IntoIter: TrustedLen,
+    'a: 'b,
+{
+    let mappings = mappings.into_iter().enumerate();
 
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "rustix ensures this is a valid file descriptor"
-    )]
-    let raw_path_fd = path_fd.as_raw_fd() as linux_general::__u64;
+    //NOTE: we need a better error for this but i'll just leave it this way for
+    //      now
+    (resolved.len() == 0).ok_or(ChildError::InvalidState)?;
+    (resolved.capacity()
+        >= mappings.size_hint().1.ok_or(ChildError::BufferTooSmall)?)
+    .ok_or(ChildError::BufferTooSmall)?;
 
-    let mut open_tree_flags = linux_general::OPEN_TREE_CLONE
-        | linux_general::OPEN_TREE_CLOEXEC
-        | linux_general::AT_EMPTY_PATH;
+    let resolved = resolved.spare_capacity_mut();
 
-    if is_recursive {
-        open_tree_flags |= linux_general::AT_RECURSIVE;
+    //NOTE: so, if you're doing an absurd amount of bind mounts or already have
+    //      contention for that resource on your system, this could be an issue.
+    //      my local reference point is user.max_mnt_namespaces is 512051. i
+    //      don't think this is likely, but if it is, there *are* ways around
+    //      this, just let me know if you run into issues
+
+    for (i, (destination, source)) in mappings {
+        let mut flags = OPEN_TREE_NAMESPACE
+            | linux_general::OPEN_TREE_CLOEXEC
+            | linux_general::AT_EMPTY_PATH;
+        let mut file_info = None;
+        let (dirfd, attributes, is_recursive) = match &source.inner {
+            SourceInner::Bind(BindMount::File {
+                dirfd,
+                name,
+                fd,
+                attributes,
+            }) => {
+                file_info = Some((*name, *fd));
+
+                //NOTE: file mounts cannot be recursive
+                (dirfd, *attributes, false)
+            }
+            SourceInner::Bind(BindMount::Directory {
+                fd,
+                attributes,
+                is_recursive,
+            }) => {
+                if *is_recursive {
+                    flags |= linux_general::AT_RECURSIVE;
+                }
+
+                (fd, *attributes, *is_recursive)
+            }
+            _ => continue,
+        };
+
+        //SAFETY: `dirfd` is valid by rustix's rules, everything else
+        //        is standard
+        let namespace_fd = unsafe {
+            libc::syscall(
+                linux_general::__NR_open_tree_attr.into(),
+                dirfd.as_raw_fd() as ffi::c_long,
+                c"".as_ptr(),
+                flags,
+                ptr::null::<linux_general::mount_attr>(),
+                0,
+            )
+        };
+        if namespace_fd == -1 {
+            Err(io::Error::last_os_error())?;
+        }
+
+        namespace_fd_scratch_space.push((
+            i,
+            //SAFETY: we just checked it wasn't `-1`, which is the only
+            //        non-file descriptor return code
+            unsafe { OwnedFd::from_raw_fd(namespace_fd as i32) },
+            destination,
+            file_info,
+            attributes,
+            is_recursive,
+        ));
     }
 
-    //SAFETY: `raw_path_fd` is valid, everything else is passed as the manpage
-    //        describes
-    let fd = unsafe {
+    //NOTE: so, there's some real subtle ordering here. we need to capture
+    //      those namespace fds prior to unsharing our own mount namespace so
+    //      they stay valid for our purposes.
+
+    // SAFETY: only unsharing the mount namespace
+    unsafe {
+        rustix::thread::unshare_unsafe(UnshareFlags::NEWNS)?;
+    }
+
+    let original_ns_flags = OPEN_TREE_NAMESPACE
+        | linux_general::OPEN_TREE_CLOEXEC
+        | linux_general::AT_EMPTY_PATH
+        | linux_general::AT_RECURSIVE;
+
+    //NOTE: capture the original mount tree
+    //SAFETY: this is all standard
+    let original_ns = unsafe {
         libc::syscall(
             linux_general::__NR_open_tree_attr.into(),
-            raw_path_fd,
-            c"".as_ptr(),
-            open_tree_flags,
-            &mount_attr,
-            size_of::<linux_general::mount_attr>(),
+            libc::AT_FDCWD,
+            c"/".as_ptr(),
+            original_ns_flags,
+            ptr::null::<linux_general::mount_attr>(),
+            0,
         )
     };
-    if fd == -1 {
-        //NOTE: could probably provide better diagnostics here
+    if original_ns == -1 {
         Err(io::Error::last_os_error())?;
     }
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "see the safety comment below"
-    )]
-    //SAFETY: we just checked that it wasn't `-1`. since
-    //        `open_tree_attr(2)` must return a valid file
-    //        descriptor, this is safe
-    let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    //SAFETY: we just checked it wasn't `-1`
+    let original_ns = unsafe { OwnedFd::from_raw_fd(original_ns as i32) };
 
-    let is_directory = FileType::from_raw_mode(
-        rustix::fs::statx(
-            &fd,
-            "",
-            AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW,
-            StatxFlags::TYPE,
-        )?
-        .stx_mode
-        .into(),
-    )
-    .is_dir();
+    let n_binds = namespace_fd_scratch_space.len();
+    for (i, namespace_fd, destination, file_info, attributes, is_recursive) in
+        namespace_fd_scratch_space
+    {
+        rustix::thread::move_into_link_name_space(
+            namespace_fd.as_fd(),
+            Some(LinkNameSpaceType::Mount),
+        )?;
+        rustix::process::chdir("/")?;
 
-    Ok(ResolvedMount::Fd {
-        fd,
-        destination,
-        is_directory,
-    })
+        let mut open_tree_flags =
+            linux_general::OPEN_TREE_CLONE | linux_general::OPEN_TREE_CLOEXEC;
+
+        if *is_recursive {
+            open_tree_flags |= linux_general::AT_RECURSIVE;
+        }
+
+        let mount_attr = linux_general::mount_attr {
+            attr_set: attributes.into_mount_attr().into(),
+            attr_clr: 0,
+            propagation: 0,
+            userns_fd: 0,
+        };
+
+        let fd = if let Some((name, _)) = &file_info {
+            name.as_bytes().into_with_c_str(|name| {
+                //SAFETY: this is just what the manpage says to do.
+                //        `mount_attr` is valid
+                Ok(unsafe {
+                    libc::syscall(
+                        linux_general::__NR_open_tree_attr.into(),
+                        CWD,
+                        name.as_ptr(),
+                        open_tree_flags,
+                        &mount_attr,
+                        size_of::<linux_general::mount_attr>(),
+                    )
+                })
+            })?
+        } else {
+            //SAFETY: this is just what the manpage says to do. `mount_attr` is
+            //        valid
+            unsafe {
+                libc::syscall(
+                    linux_general::__NR_open_tree_attr.into(),
+                    CWD,
+                    c"/".as_ptr(),
+                    open_tree_flags,
+                    &mount_attr,
+                    size_of::<linux_general::mount_attr>(),
+                )
+            }
+        };
+        if fd == -1 {
+            //NOTE: it's probably okay to delay the errno check until here
+            Err(io::Error::last_os_error())?;
+        }
+
+        //SAFETY: we just checked that the fd wasn't `-1`
+        let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+
+        if let Some((_, original_fd)) = file_info {
+            //TODO: we need a better error than this
+            linux_path::same_file_identity(original_fd.as_fd(), fd.as_fd())?
+                .ok_or(ChildError::InvalidState)?;
+        }
+
+        //SAFETY: we've ensured at the top of this function that there is
+        //        enough space
+        let _ = unsafe { resolved.get_unchecked_mut(*i) }.write(
+            ResolvedMount::Fd {
+                fd,
+                destination,
+                is_directory: file_info.is_none(),
+            },
+        );
+    }
+
+    rustix::thread::move_into_link_name_space(
+        original_ns.as_fd(),
+        Some(LinkNameSpaceType::Mount),
+    )?;
+    rustix::process::chdir("/")?;
+
+    Ok(n_binds)
 }

@@ -18,4 +18,5 @@ pub mod mapping;
 pub(crate) mod netlink;
 pub mod normalization;
 pub mod policy;
+pub mod path;
 pub(crate) mod util;
