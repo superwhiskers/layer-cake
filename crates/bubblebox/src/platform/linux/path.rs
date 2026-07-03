@@ -2,19 +2,20 @@
 
 //! Host path abstractions.
 
-use rustix::{
-    fd::{AsFd, BorrowedFd, OwnedFd},
-    fs::{AtFlags, CWD, FileType, Mode, OFlags, ResolveFlags, StatxFlags},
-    io::Errno,
-};
+use linux_raw_sys::general as linux;
 use std::{
     ffi::{OsStr, OsString},
-    os::unix::ffi::OsStrExt,
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
     path::{Component, Path, PathBuf},
 };
 
-use super::util;
-use crate::errors::Error;
+use super::{
+    errors::{
+        Error, Frontend as FrontendError, ResultSyscallExt, SyscallError,
+    },
+    syscalls::{self, AtFd, Cwd, WithCStr},
+    util,
+};
 
 /// Checks if a path represents a directory.
 ///
@@ -22,18 +23,17 @@ use crate::errors::Error;
 ///
 /// This function errors if calling `statx(2)` on the given file descriptor
 /// fails.
-fn is_directory(fd: impl AsFd) -> Result<bool, Errno> {
-    Ok(FileType::from_raw_mode(
-        rustix::fs::statx(
-            fd.as_fd(),
-            "",
-            AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW,
-            StatxFlags::TYPE,
-        )?
-        .stx_mode
-        .into(),
-    )
-    .is_dir())
+fn is_directory<'fd>(fd: impl Into<AtFd<'fd>>) -> Result<bool, SyscallError> {
+    let filetype = syscalls::statx(
+        fd,
+        c"",
+        (linux::AT_EMPTY_PATH | linux::AT_SYMLINK_NOFOLLOW) as i32,
+        linux::STATX_TYPE,
+    )?
+    .stx_mode as u32
+        & linux::S_IFMT;
+
+    Ok(filetype == linux::S_IFDIR)
 }
 
 /// Checks if one file descriptor shares the same file identity as another.
@@ -42,21 +42,21 @@ fn is_directory(fd: impl AsFd) -> Result<bool, Errno> {
 ///
 /// This function errors if calling `statx(2)` on the two given file descriptors
 /// fails.
-pub fn same_file_identity(
-    lhs: impl AsFd,
-    rhs: impl AsFd,
-) -> Result<bool, Errno> {
-    let lhs = rustix::fs::statx(
-        lhs.as_fd(),
-        "",
-        AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW,
-        StatxFlags::INO,
+pub fn same_file_identity<'fd>(
+    lhs: impl Into<AtFd<'fd>>,
+    rhs: impl Into<AtFd<'fd>>,
+) -> Result<bool, SyscallError> {
+    let lhs = syscalls::statx(
+        lhs,
+        c"",
+        (linux::AT_EMPTY_PATH | linux::AT_SYMLINK_NOFOLLOW) as i32,
+        linux::STATX_INO,
     )?;
-    let rhs = rustix::fs::statx(
-        rhs.as_fd(),
-        "",
-        AtFlags::EMPTY_PATH | AtFlags::SYMLINK_NOFOLLOW,
-        StatxFlags::INO,
+    let rhs = syscalls::statx(
+        rhs,
+        c"",
+        (linux::AT_EMPTY_PATH | linux::AT_SYMLINK_NOFOLLOW) as i32,
+        linux::STATX_INO,
     )?;
     Ok(lhs.stx_dev_major == rhs.stx_dev_major
         && lhs.stx_dev_minor == rhs.stx_dev_minor
@@ -114,8 +114,12 @@ impl HostFile {
     ///
     /// This intentionally does not resolve symlinks. If symlink resolution is
     /// desired, resolve it externally and pass the real path to this method.
+    ///
+    /// # Errors
+    ///
+    /// TODO
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
-        Self::open_at(CWD, path)
+        Self::open_at(Cwd, path)
     }
 
     /// Creates a new [`HostFile`] from the given [`Path`], opening the
@@ -129,8 +133,12 @@ impl HostFile {
     ///
     /// This intentionally does not resolve symlinks. If symlink resolution is
     /// desired, resolve it externally and pass the real path to this method.
-    pub fn open_at(
-        relative_to: impl AsFd,
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    pub fn open_at<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
     ) -> Result<Self, Error> {
         let mut components = path.as_ref().components();
@@ -138,7 +146,7 @@ impl HostFile {
         let mut name = if let Some(first) = components.next() {
             first
         } else {
-            return Err(Error::NotAFile);
+            return Err(FrontendError::NotAFile.into());
         };
 
         for component in components {
@@ -146,15 +154,30 @@ impl HostFile {
             name = component;
         }
 
-        let dirfd = util::retry_on_interrupt!({
-            rustix::fs::openat2(
-                relative_to.as_fd(),
-                directory.as_os_str().as_bytes(),
-                OFlags::PATH | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::empty(),
-                ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS,
-            )
-        })?;
+        let relative_to = relative_to.into();
+        let dirfd = directory
+            .as_os_str()
+            .with_c_str::<{ syscalls::PATH_COMPONENT_MAX }, _, FrontendError>(
+                |directory| {
+                    util::retry_on_interrupt!({
+                        syscalls::openat2(
+                            &relative_to,
+                            directory,
+                            linux::open_how {
+                                flags: (linux::O_PATH
+                                    | linux::O_CLOEXEC
+                                    | linux::O_NOFOLLOW)
+                                    as u64,
+                                mode: 0,
+                                resolve: (linux::RESOLVE_NO_MAGICLINKS
+                                    | linux::RESOLVE_NO_SYMLINKS)
+                                    as u64,
+                            },
+                        )
+                    })
+                    .map_err(Into::into)
+                },
+            )?;
 
         //TODO: there could be a race here but i really don't know what else to
         //      do here. the only alternative i see is opening a file descriptor
@@ -164,19 +187,34 @@ impl HostFile {
         //      open a tree themselves and we can provide a facility for
         //      moving it.
 
-        let fd = util::retry_on_interrupt!({
-            rustix::fs::openat2(
-                dirfd.as_fd(),
-                name.as_os_str().as_bytes(),
-                OFlags::PATH | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::empty(),
-                ResolveFlags::NO_MAGICLINKS
-                    | ResolveFlags::NO_SYMLINKS
-                    | ResolveFlags::BENEATH,
-            )
-        })?;
+        let fd = name
+            .as_os_str()
+            .with_c_str::<{ syscalls::PATH_COMPONENT_MAX }, _, FrontendError>(
+                |name| {
+                    util::retry_on_interrupt!({
+                        syscalls::openat2(
+                            dirfd.as_fd(),
+                            name,
+                            linux::open_how {
+                                flags: (linux::O_PATH
+                                    | linux::O_CLOEXEC
+                                    | linux::O_NOFOLLOW)
+                                    as u64,
+                                mode: 0,
+                                resolve: (linux::RESOLVE_NO_MAGICLINKS
+                                    | linux::RESOLVE_NO_SYMLINKS
+                                    | linux::RESOLVE_BENEATH)
+                                    as u64,
+                            },
+                        )
+                    })
+                    .map_err(Into::into)
+                },
+            )?;
 
-        if is_directory(dirfd.as_fd())? && !is_directory(fd.as_fd())? {
+        if is_directory(dirfd.as_fd()).wrap_error::<FrontendError>()?
+            && !is_directory(fd.as_fd()).wrap_error::<FrontendError>()?
+        {
             Ok(Self {
                 dirfd,
                 name: <Component<'_> as AsRef<OsStr>>::as_ref(&name)
@@ -184,7 +222,7 @@ impl HostFile {
                 fd,
             })
         } else {
-            Err(Error::NotAFile)
+            Err(FrontendError::NotAFile.into())
         }
     }
 
@@ -198,7 +236,7 @@ impl HostFile {
     pub fn has_same_file_identity(
         &self,
         rhs: impl AsFd,
-    ) -> Result<bool, Errno> {
+    ) -> Result<bool, SyscallError> {
         same_file_identity(self.fd.as_fd(), rhs.as_fd())
     }
 
@@ -243,7 +281,7 @@ impl<'fd> HostFileRef<'fd> {
     pub fn has_same_file_identity(
         &self,
         rhs: impl AsFd,
-    ) -> Result<bool, Errno> {
+    ) -> Result<bool, SyscallError> {
         same_file_identity(self.fd, rhs.as_fd())
     }
 }
@@ -264,29 +302,41 @@ impl HostDirectory {
 
     /// Creates a new [`HostDirectory`] from the given [`Path`].
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
-        Self::open_at(CWD, path)
+        Self::open_at(Cwd, path)
     }
 
     /// Creates a new [`HostDirectory`] from the given [`Path`], opening
     /// the file descriptor beneath the given path file descriptor.
-    pub fn open_at(
-        relative_to: impl AsFd,
+    pub fn open_at<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
     ) -> Result<Self, Error> {
-        let fd = util::retry_on_interrupt!({
-            rustix::fs::openat2(
-                relative_to.as_fd(),
-                path.as_ref().as_os_str().as_bytes(),
-                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                Mode::empty(),
-                ResolveFlags::NO_MAGICLINKS,
-            )
-        })?;
+        let relative_to = relative_to.into();
+        let fd = path
+            .as_ref()
+            .as_os_str()
+            .with_c_str::<{ syscalls::PATH_MAX }, _, FrontendError>(|path| {
+                util::retry_on_interrupt!({
+                    syscalls::openat2(
+                        &relative_to,
+                        path,
+                        linux::open_how {
+                            flags: (linux::O_PATH
+                                | linux::O_DIRECTORY
+                                | linux::O_CLOEXEC)
+                                as u64,
+                            mode: 0,
+                            resolve: linux::RESOLVE_NO_MAGICLINKS as u64,
+                        },
+                    )
+                })
+                .map_err(Into::into)
+            })?;
 
-        if is_directory(fd.as_fd())? {
+        if is_directory(fd.as_fd()).wrap_error::<FrontendError>()? {
             Ok(Self(fd))
         } else {
-            Err(Error::NotADirectory)
+            Err(FrontendError::NotADirectory.into())
         }
     }
 
@@ -315,54 +365,6 @@ impl<'fd> HostDirectoryRef<'fd> {
     pub fn into_fd(self) -> BorrowedFd<'fd> {
         self.0
     }
-
-    /*
-    /// Constructs a new host path from the given [`Path`], only performing
-    /// operations that operate on the path lexically.
-    ///
-    /// # Errors
-    ///
-    /// This method errors if the path fails the validation step.
-    pub fn new(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let path = path.as_ref();
-
-        if !path.is_absolute() {
-            return Err(Error::PathNotAbsolute);
-        }
-
-        let mut normalized = PathBuf::from("/");
-
-        for component in path.components() {
-            match component {
-                //NOTE: the former is expected and the latter is normalized
-                //      away or excluded by checking that the path is not
-                //      relative earlier
-                Component::RootDir | Component::CurDir => {}
-
-                c @ Component::Prefix(_) => normalized.push(c),
-                Component::Normal(c) => normalized.push(c),
-                Component::ParentDir => {
-                    return Err(Error::PathContainsParent);
-                }
-            }
-        }
-
-        Ok(Self(normalized))
-    }
-
-    /// Constructs a new host path from the given [`Path`], resolving symbolic
-    /// links.
-    ///
-    /// This is not the default, as operations using on the filesystem may be
-    /// undesired.
-    ///
-    /// # Errors
-    ///
-    /// This method errors if canonicalizing the link fails.
-    pub fn new_using_fs(path: impl AsRef<Path>) -> Result<Self, Error> {
-        Ok(Self(path.as_ref().canonicalize()?))
-    }
-    */
 }
 
 impl<'fd> AsFd for HostDirectoryRef<'fd> {
@@ -370,35 +372,3 @@ impl<'fd> AsFd for HostDirectoryRef<'fd> {
         self.0.as_fd()
     }
 }
-
-/*
-impl TryFrom<&Path> for Host {
-    type Error = Error;
-
-    fn try_from(path: &Path) -> Result<Self, Self::Error> {
-        Self::new(path)
-    }
-}
-
-impl TryFrom<PathBuf> for Host {
-    type Error = Error;
-
-    fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
-        Self::new(path)
-    }
-}
-
-impl TryFrom<&str> for Host {
-    type Error = Error;
-
-    fn try_from(path: &str) -> Result<Self, Self::Error> {
-        Self::new(PathBuf::from(path))
-    }
-}
-
-impl AsRef<Path> for Host {
-    fn as_ref(&self) -> &Path {
-        self.0.as_path()
-    }
-}
-*/

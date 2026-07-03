@@ -24,13 +24,14 @@
 //TODO: temporary
 #![allow(missing_copy_implementations)]
 
-use rustix::{
-    event::EventfdFlags,
-    fd::{AsFd, BorrowedFd, OwnedFd},
-    fs::{CWD, Mode, OFlags, ResolveFlags},
-    process::Pid,
+use linux_raw_sys::general as linux;
+use std::{
+    io::Read,
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
 };
-use std::{io::Read, time::Duration};
+
+#[cfg(feature = "systemd-cgroups")]
+use std::time::Duration;
 
 #[cfg(feature = "systemd-cgroups")]
 use dbus::{
@@ -42,10 +43,21 @@ use dbus::{
 #[cfg(feature = "systemd-cgroups")]
 use uuid::Uuid;
 
-use super::util::{self, FdReadWrite};
-use crate::errors::{ChildError, Error};
+use super::{
+    errors::{
+        Host as HostError, PostCloneGuest as PostCloneGuestError,
+        PostCloneHost as PostCloneHostError, PreClone as PreCloneError,
+    },
+    mapping::Mode,
+    syscalls::{self, Pid},
+    util::{self, FdReadWrite},
+};
 
-//TODO: error on lack of controller for which configuration exists
+#[cfg(feature = "systemd-cgroups")]
+use super::{
+    errors::PostCloneGuestOther as PostCloneGuestOtherError,
+    syscalls::{Cwd, WithCStr},
+};
 
 /// Controllers available to a cgroup.
 #[derive(Clone, Debug, Default)]
@@ -69,16 +81,21 @@ struct CgroupControllers {
 ///
 /// This function errors if opening the `cgroup.controllers` file on the cgroup
 /// fails, or if reading its contents fails.
-fn parse_controllers(cgroup_fd: impl AsFd) -> Result<CgroupControllers, Error> {
+fn parse_controllers(
+    cgroup_fd: impl AsFd,
+) -> Result<CgroupControllers, HostError> {
     let mut controllers_fd = FdReadWrite::new(util::retry_on_interrupt!({
-        rustix::fs::openat2(
+        syscalls::openat2(
             cgroup_fd.as_fd(),
-            "cgroup.controllers",
-            OFlags::RDONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::BENEATH
-                | ResolveFlags::NO_MAGICLINKS
-                | ResolveFlags::NO_SYMLINKS,
+            c"cgroup.controllers",
+            linux::open_how {
+                flags: (linux::O_RDONLY | linux::O_CLOEXEC) as u64,
+                mode: 0,
+                resolve: (linux::RESOLVE_BENEATH
+                    | linux::RESOLVE_NO_MAGICLINKS
+                    | linux::RESOLVE_NO_SYMLINKS)
+                    as u64,
+            },
         )
     })?);
 
@@ -135,14 +152,17 @@ impl Policy {
     ///
     /// This method errors if writing to the attributes of the settings cgroup
     /// fails.
-    pub fn apply_to_cgroup(&self, cgroup_fd: impl AsFd) -> Result<(), Error> {
+    pub fn apply_to_cgroup(
+        &self,
+        cgroup_fd: impl AsFd,
+    ) -> Result<(), HostError> {
         self.cgroup.apply_to_cgroup(&cgroup_fd)?;
 
         let controllers = parse_controllers(&cgroup_fd)?;
 
         if let Some(cpu_policy) = &self.cpu {
             if !controllers.cpu {
-                return Err(Error::MissingCgroupController("cpu"));
+                return Err(HostError::MissingCgroupController("cpu"));
             }
 
             cpu_policy.apply_to_cgroup(&cgroup_fd)?;
@@ -150,7 +170,7 @@ impl Policy {
 
         if let Some(memory_policy) = &self.memory {
             if !controllers.memory {
-                return Err(Error::MissingCgroupController("memory"));
+                return Err(HostError::MissingCgroupController("memory"));
             }
 
             memory_policy.apply_to_cgroup(&cgroup_fd)?;
@@ -158,7 +178,7 @@ impl Policy {
 
         if let Some(io_policy) = &self.io {
             if !controllers.io {
-                return Err(Error::MissingCgroupController("io"));
+                return Err(HostError::MissingCgroupController("io"));
             }
 
             io_policy.apply_to_cgroup(&cgroup_fd)?;
@@ -166,7 +186,7 @@ impl Policy {
 
         if let Some(pids_policy) = &self.pids {
             if !controllers.pids {
-                return Err(Error::MissingCgroupController("pids"));
+                return Err(HostError::MissingCgroupController("pids"));
             }
 
             pids_policy.apply_to_cgroup(&cgroup_fd)?;
@@ -220,23 +240,26 @@ impl CgroupController {
     ///
     /// This method errors if writing to the attributes of the settings cgroup
     /// fails.
-    pub fn apply_to_cgroup(&self, cgroup_fd: impl AsFd) -> Result<(), Error> {
+    pub fn apply_to_cgroup(
+        &self,
+        cgroup_fd: impl AsFd,
+    ) -> Result<(), HostError> {
         let cgroup_fd = cgroup_fd.as_fd();
 
         if self.is_threaded {
             util::open_beneath_and_write!(
                 &cgroup_fd,
-                "cgroup.type",
+                c"cgroup.type",
                 b"threaded\n"
-            )?;
+            );
         }
 
         if self.enable_psi_accounting {
             util::open_beneath_and_write!(
                 &cgroup_fd,
-                "cgroup.pressure",
+                c"cgroup.pressure",
                 b"1\n"
-            )?;
+            );
         }
 
         Ok(())
@@ -286,16 +309,19 @@ impl CpuController {
     ///
     /// This method errors if writing to the attributes of the settings cgroup
     /// fails.
-    pub fn apply_to_cgroup(&self, cgroup_fd: impl AsFd) -> Result<(), Error> {
+    pub fn apply_to_cgroup(
+        &self,
+        cgroup_fd: impl AsFd,
+    ) -> Result<(), HostError> {
         let mut itoa_buffer = itoa::Buffer::new();
         let cgroup_fd = cgroup_fd.as_fd();
 
         if self.subtree_control {
             util::open_beneath_and_write!(
                 &cgroup_fd,
-                "cgroup.subtree_control",
+                c"cgroup.subtree_control",
                 b"+cpu\n"
-            )?;
+            );
         }
 
         if let Some(weight) = &self.weight {
@@ -303,48 +329,49 @@ impl CpuController {
                 CpuWeight::Weight(v) => {
                     util::open_beneath_and_write!(
                         &cgroup_fd,
-                        "cpu.weight",
+                        c"cpu.weight",
                         itoa_buffer.format(*v).as_bytes()
-                    )?;
+                    );
                 }
                 CpuWeight::Nice(v) => {
                     util::open_beneath_and_write!(
                         &cgroup_fd,
-                        "cpu.weight.nice",
+                        c"cpu.weight.nice",
                         itoa_buffer.format(*v).as_bytes()
-                    )?;
+                    );
                 }
             }
         }
 
         if let Some((value, duration)) = &self.max {
             let max_fd = util::retry_on_interrupt!({
-                rustix::fs::openat2(
+                syscalls::openat2(
                     &cgroup_fd,
-                    "cpu.max",
-                    OFlags::WRONLY | OFlags::CLOEXEC,
-                    Mode::empty(),
-                    ResolveFlags::BENEATH
-                        | ResolveFlags::NO_MAGICLINKS
-                        | ResolveFlags::NO_SYMLINKS,
+                    c"cpu.max",
+                    linux::open_how {
+                        flags: (linux::O_WRONLY | linux::O_CLOEXEC) as u64,
+                        mode: 0,
+                        resolve: (linux::RESOLVE_BENEATH
+                            | linux::RESOLVE_NO_MAGICLINKS
+                            | linux::RESOLVE_NO_SYMLINKS)
+                            as u64,
+                    },
                 )
             })?;
 
             //TODO: remove the allocation here
             let stringified_value = value.into_str(&mut itoa_buffer);
-            util::write_checked!(
-                &max_fd,
-                format!("{stringified_value} {}", *duration).as_bytes()
-            )?;
+            let formatted = format!("{stringified_value} {}", *duration);
+            util::write_checked!(&max_fd, formatted.as_bytes());
         }
 
         if let Some(max_burst) = &self.max_burst {
             let value = itoa_buffer.format(*max_burst);
             util::open_beneath_and_write!(
                 &cgroup_fd,
-                "cpu.max.burst",
+                c"cpu.max.burst",
                 value.as_bytes()
-            )?;
+            );
         }
 
         if let Some(uclamp_min) = &self.uclamp_min {
@@ -356,16 +383,16 @@ impl CpuController {
                     let string = format!("{whole}.{fractional:02}");
                     util::open_beneath_and_write!(
                         &cgroup_fd,
-                        "cpu.uclamp.min",
+                        c"cpu.uclamp.min",
                         string.as_bytes()
-                    )?;
+                    );
                 }
                 Resource::Max => {
                     util::open_beneath_and_write!(
                         &cgroup_fd,
-                        "cpu.uclamp.min",
+                        c"cpu.uclamp.min",
                         b"max"
-                    )?;
+                    );
                 }
             }
         }
@@ -378,22 +405,22 @@ impl CpuController {
                     let string = format!("{whole}.{fractional:02}");
                     util::open_beneath_and_write!(
                         &cgroup_fd,
-                        "cpu.uclamp.max",
+                        c"cpu.uclamp.max",
                         string.as_bytes()
-                    )?;
+                    );
                 }
                 Resource::Max => {
                     util::open_beneath_and_write!(
                         &cgroup_fd,
-                        "cpu.uclamp.max",
+                        c"cpu.uclamp.max",
                         b"max"
-                    )?;
+                    );
                 }
             }
         }
 
         if self.is_idle {
-            util::open_beneath_and_write!(&cgroup_fd, "cpu.idle", b"1")?;
+            util::open_beneath_and_write!(&cgroup_fd, c"cpu.idle", b"1");
         }
 
         Ok(())
@@ -506,15 +533,18 @@ impl MemoryController {
     ///
     /// This method errors if writing to the attributes of the settings cgroup
     /// fails.
-    pub fn apply_to_cgroup(&self, cgroup_fd: impl AsFd) -> Result<(), Error> {
+    pub fn apply_to_cgroup(
+        &self,
+        cgroup_fd: impl AsFd,
+    ) -> Result<(), HostError> {
         let cgroup_fd = cgroup_fd.as_fd();
 
         if self.subtree_control {
             util::open_beneath_and_write!(
                 &cgroup_fd,
-                "cgroup.subtree_control",
+                c"cgroup.subtree_control",
                 b"+memory\n"
-            )?;
+            );
         }
 
         //TODO: implement these, skipped for now
@@ -541,15 +571,18 @@ impl IoController {
     ///
     /// This method errors if writing to the attributes of the settings cgroup
     /// fails.
-    pub fn apply_to_cgroup(&self, cgroup_fd: impl AsFd) -> Result<(), Error> {
+    pub fn apply_to_cgroup(
+        &self,
+        cgroup_fd: impl AsFd,
+    ) -> Result<(), HostError> {
         let cgroup_fd = cgroup_fd.as_fd();
 
         if self.subtree_control {
             util::open_beneath_and_write!(
                 &cgroup_fd,
-                "cgroup.subtree_control",
+                c"cgroup.subtree_control",
                 b"+io\n"
-            )?;
+            );
         }
 
         //TODO: implement these, skipped for now
@@ -577,25 +610,28 @@ impl PidsController {
     ///
     /// This method errors if writing to the attributes of the settings cgroup
     /// fails.
-    pub fn apply_to_cgroup(&self, cgroup_fd: impl AsFd) -> Result<(), Error> {
+    pub fn apply_to_cgroup(
+        &self,
+        cgroup_fd: impl AsFd,
+    ) -> Result<(), HostError> {
         let mut itoa_buffer = itoa::Buffer::new();
         let cgroup_fd = cgroup_fd.as_fd();
 
         if self.subtree_control {
             util::open_beneath_and_write!(
                 &cgroup_fd,
-                "cgroup.subtree_control",
+                c"cgroup.subtree_control",
                 b"+pids\n"
-            )?;
+            );
         }
 
         if let Some(max) = self.max {
             let stringified_value = max.into_str(&mut itoa_buffer);
             util::open_beneath_and_write!(
                 &cgroup_fd,
-                "pids.max",
+                c"pids.max",
                 stringified_value.as_bytes()
-            )?;
+            );
         }
 
         Ok(())
@@ -633,7 +669,7 @@ where
     pub fn clone_args_cgroup<'a>(
         &self,
         state: &'a T::State,
-    ) -> Option<Result<BorrowedFd<'a>, Error>> {
+    ) -> Option<Result<BorrowedFd<'a>, PreCloneError>> {
         self.inner.clone_args_cgroup(&self.policy, state)
     }
 
@@ -646,7 +682,7 @@ where
         &self,
         state: &mut T::State,
         guest_pid: Pid,
-    ) -> Result<(), Error> {
+    ) -> Result<(), PostCloneHostError> {
         self.inner
             .host_post_clone_hook(&self.policy, state, guest_pid)
     }
@@ -659,7 +695,7 @@ where
     pub fn guest_post_clone_hook(
         &self,
         state: T::State,
-    ) -> Result<(), ChildError> {
+    ) -> Result<(), PostCloneGuestError> {
         self.inner.guest_post_clone_hook(&self.policy, state)
     }
 
@@ -680,7 +716,7 @@ where
     }
 
     /// Performs cleanup operations necessary for the backend.
-    pub fn teardown(&self, state: T::State) -> Result<(), Error> {
+    pub fn teardown(&self, state: T::State) -> Result<(), PostCloneHostError> {
         self.inner.teardown(state)
     }
 }
@@ -719,7 +755,7 @@ pub unsafe trait Backend {
         &self,
         policy: &Policy,
         state: &'a Self::State,
-    ) -> Option<Result<BorrowedFd<'a>, Error>> {
+    ) -> Option<Result<BorrowedFd<'a>, PreCloneError>> {
         None
     }
 
@@ -729,7 +765,7 @@ pub unsafe trait Backend {
         policy: &Policy,
         state: &mut Self::State,
         guest_pid: Pid,
-    ) -> Result<(), Error> {
+    ) -> Result<(), PostCloneHostError> {
         Ok(())
     }
 
@@ -738,7 +774,7 @@ pub unsafe trait Backend {
         &self,
         policy: &Policy,
         state: Self::State,
-    ) -> Result<(), ChildError> {
+    ) -> Result<(), PostCloneGuestError> {
         Ok(())
     }
 
@@ -759,7 +795,7 @@ pub unsafe trait Backend {
     }
 
     /// Performs cleanup operations necessary for the backend.
-    fn teardown(&self, state: Self::State) -> Result<(), Error> {
+    fn teardown(&self, state: Self::State) -> Result<(), PostCloneHostError> {
         Ok(())
     }
 }
@@ -814,21 +850,7 @@ impl OwnedFdState {
     /// Takes ownership and consumes a cgroups hierarchy.
     ///
     /// The file descriptor provided for state must refer to a directory in the
-    /// cgroups hierarchy which is writeable by the process. One way to open
-    /// one would be:
-    ///
-    /// ```ignore
-    /// // `cgroups_fd` should refer to the root of the cgroups hierarchy
-    /// let tree = rustix::fs::openat2(
-    ///     cgroups_fd,
-    ///     "path/to/our-tree",
-    ///     OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
-    ///     Mode::empty(),
-    ///     ResolveFlags::BENEATH
-    ///         | ResolveFlags::NO_MAGICLINKS
-    ///         | ResolveFlags::NO_SYMLINKS,
-    /// )?;
-    /// ```
+    /// cgroups hierarchy which is writeable by the process.
     ///
     /// This part of the cgroups hierarchy will be used to write the cgroups
     /// configuration to. bubblebox will create a nested cgroup in which the
@@ -838,25 +860,28 @@ impl OwnedFdState {
     ///
     /// This method errors if creating and opening the nested cgroup for the
     /// child process fails.
-    pub fn new(settings_fd: OwnedFd) -> Result<Self, Error> {
-        rustix::fs::mkdirat(
-            &settings_fd,
-            "bubblebox-child",
-            Mode::RUSR | Mode::WUSR | Mode::XUSR,
-        )?;
+    pub fn new(settings_fd: OwnedFd) -> Result<Self, PreCloneError> {
+        syscalls::mkdirat(&settings_fd, c"bubblebox-child", Mode::RWXU.bits())?;
 
         //NOTE: technically someone could race us here but idk what we'd really
         //      be able to do about it
 
-        let child_fd = rustix::fs::openat2(
-            &settings_fd,
-            "bubblebox-child",
-            OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
-            Mode::empty(),
-            ResolveFlags::BENEATH
-                | ResolveFlags::NO_MAGICLINKS
-                | ResolveFlags::NO_SYMLINKS,
-        )?;
+        let child_fd = util::retry_on_interrupt!({
+            syscalls::openat2(
+                &settings_fd,
+                c"bubblebox-child",
+                linux::open_how {
+                    flags: (linux::O_PATH
+                        | linux::O_CLOEXEC
+                        | linux::O_DIRECTORY) as u64,
+                    mode: 0,
+                    resolve: (linux::RESOLVE_BENEATH
+                        | linux::RESOLVE_NO_MAGICLINKS
+                        | linux::RESOLVE_NO_SYMLINKS)
+                        as u64,
+                },
+            )
+        })?;
 
         Ok(Self {
             settings_fd,
@@ -873,9 +898,9 @@ unsafe impl Backend for OwnedFdCgroups {
         &self,
         policy: &Policy,
         state: &'a Self::State,
-    ) -> Option<Result<BorrowedFd<'a>, Error>> {
+    ) -> Option<Result<BorrowedFd<'a>, PreCloneError>> {
         if let Err(e) = policy.apply_to_cgroup(state.settings_fd.as_fd()) {
-            return Some(Err(e));
+            return Some(Err(e.into()));
         }
         Some(Ok(state.child_fd.as_fd()))
     }
@@ -918,9 +943,9 @@ impl SystemdState {
     ///
     /// # Errors
     ///
-    /// This method errors if creating an `eventfd(2)` fails.
-    pub fn new() -> Result<Self, Error> {
-        let eventfd = rustix::event::eventfd(0, EventfdFlags::CLOEXEC)?;
+    /// This method errors if creating an `eventfd2(2)` fails.
+    pub fn new() -> Result<Self, PreCloneError> {
+        let eventfd = syscalls::eventfd2(0, linux::EFD_CLOEXEC as i32)?;
         let inner = SystemdStateImpl::PreClone { eventfd };
         Ok(Self { inner })
     }
@@ -932,7 +957,7 @@ impl SystemdState {
 enum SystemdStateImpl {
     /// A `cgroups(7)` hierarchy has not yet been acquired.
     PreClone {
-        /// `eventfd(2)` used to signal the guest process that it is ready to
+        /// `eventfd2(2)` used to signal the guest process that it is ready to
         /// continue.
         eventfd: OwnedFd,
     },
@@ -966,7 +991,7 @@ unsafe impl Backend for SystemdCgroups {
         policy: &Policy,
         state: &mut Self::State,
         guest_pid: Pid,
-    ) -> Result<(), Error> {
+    ) -> Result<(), PostCloneHostError> {
         let connection = Connection::new_session()?;
         let systemd = Proxy::new(
             "org.freedesktop.systemd1",
@@ -1019,99 +1044,121 @@ unsafe impl Backend for SystemdCgroups {
             &connection,
         );
 
-        let cgroup_path: String =
-            unit.get("org.freedesktop.systemd1.Scope", "ControlGroup")?;
-
         //NOTE: we kind of have to hardcode this path, there's no way to pull
         //      this from systemd from what i can tell. fortunately, this is
         //      pretty isolated as an assumption. as long as you don't care
         //      about using our inbuilt systemd cgroups v2 tree acquisition
         //      this won't affect you. i'm not aware of systemd deviating from
         //      this mountpoint for cgroups anyway.
-        let cgroups_root_fd = rustix::fs::openat2(
-            CWD,
-            "/sys/fs/cgroup",
-            OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
-            Mode::empty(),
-            ResolveFlags::NO_MAGICLINKS | ResolveFlags::NO_SYMLINKS,
-        )?;
+        let cgroups_root_fd = util::retry_on_interrupt!({
+            syscalls::openat2(
+                Cwd,
+                c"/sys/fs/cgroup",
+                linux::open_how {
+                    flags: (linux::O_PATH
+                        | linux::O_CLOEXEC
+                        | linux::O_DIRECTORY) as u64,
+                    mode: 0,
+                    resolve: (linux::RESOLVE_NO_MAGICLINKS
+                        | linux::RESOLVE_NO_SYMLINKS)
+                        as u64,
+                },
+            )
+        })?;
 
-        //NOTE: "cgroup tetris"
         //NOTE: same note about races here does apply
 
-        let root_fd = rustix::fs::openat2(
-            cgroups_root_fd,
-            cgroup_path.trim_prefix("/"),
-            OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
-            Mode::empty(),
-            ResolveFlags::IN_ROOT
-                | ResolveFlags::NO_MAGICLINKS
-                | ResolveFlags::NO_SYMLINKS,
-        )?;
+        //NOTE: no idea why but the `&CStr` implementation for dbus' `Get`
+        //      doesn't work here for some lifetime reason
+        let cgroup_path_string: String =
+            unit.get("org.freedesktop.systemd1.Scope", "ControlGroup")?;
+        let root_fd =
+            cgroup_path_string
+                .trim_prefix("/")
+                .with_c_str::<{ syscalls::PATH_MAX }, _, PostCloneHostError>(
+                    |cgroup_path| {
+                        util::retry_on_interrupt!({
+                            syscalls::openat2(
+                                &cgroups_root_fd,
+                                cgroup_path,
+                                linux::open_how {
+                                    flags: (linux::O_PATH
+                                        | linux::O_CLOEXEC
+                                        | linux::O_DIRECTORY)
+                                        as u64,
+                                    mode: 0,
+                                    resolve: (linux::RESOLVE_IN_ROOT
+                                        | linux::RESOLVE_NO_MAGICLINKS
+                                        | linux::RESOLVE_NO_SYMLINKS)
+                                        as u64,
+                                },
+                            )
+                        })
+                        .map_err(Into::into)
+                    },
+                )?;
 
-        rustix::fs::mkdirat(
-            &root_fd,
-            "bubblebox-settings",
-            Mode::RUSR | Mode::WUSR | Mode::XUSR,
-        )?;
+        syscalls::mkdirat(&root_fd, c"bubblebox-settings", Mode::RWXU.bits())?;
 
-        let settings_fd = rustix::fs::openat2(
-            &root_fd,
-            "bubblebox-settings",
-            OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
-            Mode::empty(),
-            ResolveFlags::BENEATH
-                | ResolveFlags::NO_MAGICLINKS
-                | ResolveFlags::NO_SYMLINKS,
-        )?;
+        let settings_fd = util::retry_on_interrupt!({
+            syscalls::openat2(
+                &root_fd,
+                c"bubblebox-settings",
+                linux::open_how {
+                    flags: (linux::O_PATH
+                        | linux::O_CLOEXEC
+                        | linux::O_DIRECTORY) as u64,
+                    mode: 0,
+                    resolve: (linux::RESOLVE_BENEATH
+                        | linux::RESOLVE_NO_MAGICLINKS
+                        | linux::RESOLVE_NO_SYMLINKS)
+                        as u64,
+                },
+            )
+        })?;
 
-        rustix::fs::mkdirat(
-            &settings_fd,
-            "bubblebox-child",
-            Mode::RUSR | Mode::WUSR | Mode::XUSR,
-        )?;
+        syscalls::mkdirat(&settings_fd, c"bubblebox-child", Mode::RWXU.bits())?;
 
-        let child_fd = rustix::fs::openat2(
-            &settings_fd,
-            "bubblebox-child",
-            OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
-            Mode::empty(),
-            ResolveFlags::BENEATH
-                | ResolveFlags::NO_MAGICLINKS
-                | ResolveFlags::NO_SYMLINKS,
-        )?;
+        let child_fd = util::retry_on_interrupt!({
+            syscalls::openat2(
+                &settings_fd,
+                c"bubblebox-child",
+                linux::open_how {
+                    flags: (linux::O_PATH
+                        | linux::O_CLOEXEC
+                        | linux::O_DIRECTORY) as u64,
+                    mode: 0,
+                    resolve: (linux::RESOLVE_BENEATH
+                        | linux::RESOLVE_NO_MAGICLINKS
+                        | linux::RESOLVE_NO_SYMLINKS)
+                        as u64,
+                },
+            )
+        })?;
 
         //NOTE: shift the child process into the deepest cgroup
-        let child_processes = rustix::fs::openat2(
-            &child_fd,
-            "cgroup.procs",
-            OFlags::WRONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::BENEATH
-                | ResolveFlags::NO_MAGICLINKS
-                | ResolveFlags::NO_SYMLINKS,
-        )?;
 
         let mut itoa_buffer = itoa::Buffer::new();
         let formatted =
             itoa_buffer.format(Pid::as_raw(Some(guest_pid))).as_bytes();
-        util::check_if_incomplete(
-            util::retry_on_interrupt!({
-                rustix::io::write(&child_processes, formatted)
-            })?,
-            formatted.len(),
-        )?;
+
+        util::open_beneath_and_write!(&child_fd, c"cgroup.procs", formatted);
 
         //NOTE: delegate every controller down to our settings cgroup
-        let subtree_control = rustix::fs::openat2(
-            &root_fd,
-            "cgroup.subtree_control",
-            OFlags::WRONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::BENEATH
-                | ResolveFlags::NO_MAGICLINKS
-                | ResolveFlags::NO_SYMLINKS,
-        )?;
+        let subtree_control = util::retry_on_interrupt!({
+            syscalls::openat2(
+                &root_fd,
+                c"cgroup.subtree_control",
+                linux::open_how {
+                    flags: (linux::O_WRONLY | linux::O_CLOEXEC) as u64,
+                    mode: 0,
+                    resolve: (linux::RESOLVE_BENEATH
+                        | linux::RESOLVE_NO_MAGICLINKS
+                        | linux::RESOLVE_NO_SYMLINKS)
+                        as u64,
+                },
+            )
+        })?;
 
         let parent_controllers = parse_controllers(&root_fd)?;
 
@@ -1119,19 +1166,19 @@ unsafe impl Backend for SystemdCgroups {
         //      centralize the logic for handling that inside the policy
 
         if policy.cpu.is_some() && parent_controllers.cpu {
-            util::write_checked!(&subtree_control, b"+cpu")?;
+            util::write_checked!(&subtree_control, b"+cpu");
         }
 
         if policy.memory.is_some() && parent_controllers.memory {
-            util::write_checked!(&subtree_control, b"+memory")?;
+            util::write_checked!(&subtree_control, b"+memory");
         }
 
         if policy.io.is_some() && parent_controllers.io {
-            util::write_checked!(&subtree_control, b"+io")?;
+            util::write_checked!(&subtree_control, b"+io");
         }
 
         if policy.pids.is_some() && parent_controllers.pids {
-            util::write_checked!(&subtree_control, b"+pids")?;
+            util::write_checked!(&subtree_control, b"+pids");
         }
 
         policy.apply_to_cgroup(settings_fd.as_fd())?;
@@ -1139,7 +1186,7 @@ unsafe impl Backend for SystemdCgroups {
         if let SystemdStateImpl::PreClone { ref eventfd } = state.inner {
             util::check_if_incomplete(
                 util::retry_on_interrupt!({
-                    rustix::io::write(eventfd, 1u64.to_ne_bytes().as_slice())
+                    syscalls::write(eventfd, 1u64.to_ne_bytes().as_slice())
                 })?,
                 8,
             )?;
@@ -1152,7 +1199,7 @@ unsafe impl Backend for SystemdCgroups {
                 },
             };
         } else {
-            return Err(Error::InvalidState);
+            return Err(PostCloneHostError::InvalidCgroupsState);
         }
 
         Ok(())
@@ -1162,20 +1209,22 @@ unsafe impl Backend for SystemdCgroups {
         &self,
         policy: &Policy,
         state: Self::State,
-    ) -> Result<(), ChildError> {
+    ) -> Result<(), PostCloneGuestError> {
         if let SystemdStateImpl::PreClone { eventfd } = state.inner {
             let mut value = [0u8; 8];
             util::check_if_incomplete(
                 util::retry_on_interrupt!({
-                    rustix::io::read(&eventfd, &mut value)
+                    syscalls::read(&eventfd, &mut value)
                 })?,
                 8,
             )?;
             if u64::from_ne_bytes(value) == 0 {
-                return Err(ChildError::InvalidState);
+                return Err(
+                    PostCloneGuestOtherError::InvalidCgroupsState.into()
+                );
             }
         } else {
-            return Err(ChildError::InvalidState);
+            return Err(PostCloneGuestOtherError::InvalidCgroupsState.into());
         }
 
         Ok(())
@@ -1194,7 +1243,7 @@ unsafe impl Backend for SystemdCgroups {
         None
     }
 
-    fn teardown(&self, state: Self::State) -> Result<(), Error> {
+    fn teardown(&self, state: Self::State) -> Result<(), PostCloneHostError> {
         if let SystemdStateImpl::PostClone { unit_name, .. } = state.inner {
             let connection = Connection::new_session()?;
             let systemd = Proxy::new(

@@ -4,44 +4,39 @@
 
 //TODO: add overlayfs
 
-use linux_raw_sys::general as linux_general;
-use rustix::{
-    fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
-    fs::{CWD, Gid, Mode, OFlags, ResolveFlags, Uid},
-    io::Errno,
-    mount::{FsMountFlags, FsOpenFlags},
-    path::Arg,
-    process::{RawGid, RawUid},
-    thread::{CapabilitySet, LinkNameSpaceType, UnshareFlags},
-};
+use linux_raw_sys::general as linux;
 use std::{
     cmp,
     collections::{BTreeMap, HashSet},
-    ffi::{self, OsStr},
+    ffi::{self, CStr, OsStr},
     io,
     iter::TrustedLen,
-    mem::{self, MaybeUninit},
-    os::unix::ffi::OsStrExt,
+    mem::{self, ManuallyDrop, MaybeUninit},
+    os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd},
     ptr,
 };
 
 use super::{
+    errors::{
+        IncompleteWrite, PostCloneGuest as PostCloneGuestError,
+        PostCloneGuestOther as PostCloneGuestOtherError, Syscall, SyscallError,
+    },
     mapping::{
-        BindMount, File, MountAttributes, Owner, ProcHidepid, ProcPidNamespace,
-        ProcSubset, Source, SourceInner,
+        BindMount, File, Mode, MountAttributes, Owner, ProcHidepid,
+        ProcPidNamespace, ProcSubset, Source, SourceInner,
     },
     path as linux_path,
+    syscalls::{
+        self, CapabilitySet, Cwd, Errno, Gid, RawGid, RawUid, Uid, WithCStr,
+    },
 };
-use crate::{
-    errors::{ChildError, Error},
-    path::Guest,
-};
+use crate::path::Guest;
 
 /// Exclusive upper bound on the bit offset of a represented capability in a
 /// [`CapabilitySet`].
 const MAX_LAST_CAP: u64 = u64::BITS as u64;
 
-/// What would be `linux_general::OPEN_TREE_NAMESPACE` if it had it.
+/// What would be `linux::OPEN_TREE_NAMESPACE` if it had it.
 pub const OPEN_TREE_NAMESPACE: u32 = 1 << 1;
 
 /// Wrapper for an [`OwnedFd`] that implements [`io::Read`] and [`io::Write`].
@@ -71,15 +66,21 @@ impl AsFd for FdReadWrite {
 
 impl io::Read for FdReadWrite {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        rustix::io::read(&mut self.0, buf)
-            .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
+        syscalls::read(&mut self.0, buf).map_err(
+            |SyscallError { error, .. }| {
+                io::Error::from_raw_os_error(error.raw_os_error())
+            },
+        )
     }
 }
 
 impl io::Write for FdReadWrite {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        rustix::io::write(&mut self.0, buf)
-            .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))
+        syscalls::write(&mut self.0, buf).map_err(
+            |SyscallError { error, .. }| {
+                io::Error::from_raw_os_error(error.raw_os_error())
+            },
+        )
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -96,9 +97,9 @@ impl io::Write for FdReadWrite {
 pub const fn check_if_incomplete(
     count: usize,
     expected: usize,
-) -> Result<(), ChildError> {
+) -> Result<(), IncompleteWrite> {
     if count != expected {
-        return Err(ChildError::IncompleteWrite);
+        return Err(IncompleteWrite);
     }
     Ok(())
 }
@@ -113,26 +114,38 @@ pub const fn check_if_incomplete(
 pub fn open_parent_in_root(
     root_fd: impl AsFd,
     path: &Guest,
-) -> Result<(OwnedFd, &OsStr), ChildError> {
+) -> Result<(OwnedFd, &OsStr), PostCloneGuestError> {
     let file_name = path
         .as_ref()
         .file_name()
-        .ok_or(ChildError::PathLackedFileName)?;
-    let path_fd = retry_on_interrupt!({
-        rustix::fs::openat2(
-            root_fd.as_fd(),
-            path.as_ref()
-                .parent()
-                .ok_or(ChildError::PathLackedParentDir)?
-                .as_os_str()
-                .as_bytes(),
-            OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
-            Mode::empty(),
-            ResolveFlags::IN_ROOT
-                | ResolveFlags::NO_MAGICLINKS
-                | ResolveFlags::NO_SYMLINKS,
-        )
-    })?;
+        .ok_or(PostCloneGuestOtherError::PathLackedFileName)?;
+    let path_fd = path
+        .as_ref()
+        .parent()
+        .ok_or(PostCloneGuestOtherError::PathLackedParentDirectory)?
+        .as_os_str()
+        .with_c_str::<{ syscalls::PATH_MAX }, _, PostCloneGuestError>(
+            |path| {
+                retry_on_interrupt!({
+                    syscalls::openat2(
+                        root_fd.as_fd(),
+                        path,
+                        linux::open_how {
+                            flags: (linux::O_PATH
+                                | linux::O_CLOEXEC
+                                | linux::O_DIRECTORY)
+                                as u64,
+                            mode: 0,
+                            resolve: (linux::RESOLVE_IN_ROOT
+                                | linux::RESOLVE_NO_MAGICLINKS
+                                | linux::RESOLVE_NO_SYMLINKS)
+                                as u64,
+                        },
+                    )
+                })
+                .map_err(Into::into)
+            },
+        )?;
     Ok((path_fd, file_name))
 }
 
@@ -197,13 +210,13 @@ pub fn write_bytes(
     buffer: &mut [u8],
     offset: &mut usize,
     bytes: &[u8],
-) -> Result<(), ChildError> {
+) -> Result<(), PostCloneGuestError> {
     let end = offset
         .checked_add(bytes.len())
-        .ok_or(ChildError::BufferTooSmall)?;
+        .ok_or(PostCloneGuestOtherError::BufferTooSmall)?;
     let destination = buffer
         .get_mut(*offset..end)
-        .ok_or(ChildError::BufferTooSmall)?;
+        .ok_or(PostCloneGuestOtherError::BufferTooSmall)?;
     destination.copy_from_slice(bytes);
     *offset = end;
     Ok(())
@@ -219,7 +232,7 @@ pub fn write_integer(
     buffer: &mut [u8],
     offset: &mut usize,
     integer: impl itoa::Integer,
-) -> Result<(), ChildError> {
+) -> Result<(), PostCloneGuestError> {
     let mut intermediary = itoa::Buffer::new();
     write_bytes(buffer, offset, intermediary.format(integer).as_bytes())
 }
@@ -229,8 +242,8 @@ pub fn write_integer(
 /// # Errors
 ///
 /// This function errors if the call to `sigaction(3p)` fails, and returns the
-/// [`io::Error`] corresponding to the `errno(3)` value.
-pub fn sigchld_disposition() -> io::Result<SigchldDisposition> {
+/// [`Errno`] corresponding to the `errno(3)` value.
+pub fn sigchld_disposition() -> Result<SigchldDisposition, Errno> {
     let mut disposition = MaybeUninit::<libc::sigaction>::uninit();
 
     //SAFETY: we're retrieving the current disposition, signaled via null in
@@ -239,7 +252,7 @@ pub fn sigchld_disposition() -> io::Result<SigchldDisposition> {
         libc::sigaction(libc::SIGCHLD, ptr::null(), disposition.as_mut_ptr())
     } == -1
     {
-        return Err(io::Error::last_os_error());
+        return Err(syscalls::last_errno());
     }
 
     //SAFETY: `sigaction` succeeded, so it has initialized `disposition`
@@ -265,8 +278,8 @@ pub fn sigchld_disposition() -> io::Result<SigchldDisposition> {
 /// # Errors
 ///
 /// This function errors if the call to `sigaction(3p)` fails, and returns the
-/// [`io::Error`] corresponding to the `errno(3)` value.
-pub fn reset_signal_dispositions() -> io::Result<()> {
+/// [`Errno`] corresponding to the `errno(3)` value.
+pub fn reset_signal_dispositions() -> Result<(), SyscallError> {
     //SAFETY: this is a c data structure which is valid when zeroed
     let mut disposition = unsafe { mem::zeroed::<libc::sigaction>() };
     disposition.sa_sigaction = libc::SIG_DFL;
@@ -274,7 +287,7 @@ pub fn reset_signal_dispositions() -> io::Result<()> {
     //SAFETY: this is a valid pointer
     let _ = unsafe { libc::sigemptyset(&mut disposition.sa_mask) };
 
-    for signal in 1..linux_general::NSIG {
+    for signal in 1..linux::NSIG {
         if signal == libc::SIGKILL as u32 || signal == libc::SIGSTOP as u32 {
             //NOTE: we can't handle these
             continue;
@@ -285,11 +298,14 @@ pub fn reset_signal_dispositions() -> io::Result<()> {
             libc::sigaction(signal as ffi::c_int, &disposition, ptr::null_mut())
         } == -1
         {
-            let errno = io::Error::last_os_error();
+            let error = syscalls::last_errno();
 
             //NOTE: ignore einval because this is being compiled in
-            if errno.kind() != io::ErrorKind::InvalidInput {
-                return Err(errno);
+            if error != Errno::INVAL {
+                return Err(SyscallError {
+                    syscall: Syscall::RtSigaction,
+                    error,
+                });
             }
         }
     }
@@ -305,19 +321,24 @@ pub fn reset_signal_dispositions() -> io::Result<()> {
         libc::sigprocmask(libc::SIG_SETMASK, &empty_set, ptr::null_mut())
     } == -1
     {
-        return Err(io::Error::last_os_error());
+        return Err(SyscallError {
+            syscall: Syscall::RtSigprocmask,
+            error: syscalls::last_errno(),
+        });
     }
 
     Ok(())
 }
 
-/// Macro variant of `rustix::io::retry_on_intr` for less wonky borrow checker
-/// semantics.
+/// Retry the given call on `EINTR`.
 macro_rules! retry_on_interrupt {
     ($f:expr) => {
         loop {
             match $f {
-                Err(::rustix::io::Errno::INTR) => (),
+                Err($crate::platform::linux::errors::SyscallError {
+                    error: $crate::platform::linux::syscalls::Errno::INTR,
+                    ..
+                }) => (),
                 r => break r,
             }
         }
@@ -328,41 +349,64 @@ pub(crate) use retry_on_interrupt;
 /// Macro composition of `retry_on_interrupt` and `check_if_incomplete` that
 /// treats the input as having a `len` method.
 macro_rules! write_checked {
-    ($fd:expr, $value:expr) => {
+    ($fd:expr, $value:expr $(,)?) => {{
+        let value = $value;
+
         match $crate::platform::linux::util::retry_on_interrupt!({
-            ::rustix::io::write($fd, $value)
+            $crate::platform::linux::syscalls::write($fd, value)
         }) {
-            Ok(n) => $crate::platform::linux::util::check_if_incomplete(
-                n,
-                $value.len(),
-            ),
-            Err(e) => Err(e.into()),
+            Ok(n) => {
+                $crate::platform::linux::util::check_if_incomplete(
+                    n,
+                    value.len(),
+                )?;
+            }
+
+            Err($crate::platform::linux::errors::SyscallError { error: e, .. }) => {
+                Err::<(), _>(
+                    <$crate::platform::linux::syscalls::Errno as $crate::platform::linux::errors::ErrnoExt>::attach_syscall(
+                        e,
+                        $crate::platform::linux::errors::Syscall::Write,
+                    ),
+                )?;
+            }
         }
-    };
+    }};
 }
 pub(crate) use write_checked;
 
 /// Macro that writes the given value to the path under the given file
 /// descriptor.
 macro_rules! open_beneath_and_write {
-    ($fd:expr, $path:expr, $value:expr) => {
-        match $crate::platform::linux::util::retry_on_interrupt!({
-            ::rustix::fs::openat2(
+    ($fd:expr, $path:expr, $value:expr) => {{
+        let fd = match $crate::platform::linux::util::retry_on_interrupt!({
+            $crate::platform::linux::syscalls::openat2(
                 $fd,
                 $path,
-                ::rustix::fs::OFlags::WRONLY | ::rustix::fs::OFlags::CLOEXEC,
-                ::rustix::fs::Mode::empty(),
-                ::rustix::fs::ResolveFlags::BENEATH
-                    | ::rustix::fs::ResolveFlags::NO_MAGICLINKS
-                    | ::rustix::fs::ResolveFlags::NO_SYMLINKS,
+                ::linux_raw_sys::general::open_how {
+                    flags: (::linux_raw_sys::general::O_WRONLY
+                        | ::linux_raw_sys::general::O_CLOEXEC) as u64,
+                    mode: 0,
+                    resolve: (::linux_raw_sys::general::RESOLVE_BENEATH
+                        | ::linux_raw_sys::general::RESOLVE_NO_MAGICLINKS
+                        | ::linux_raw_sys::general::RESOLVE_NO_SYMLINKS) as u64,
+                }
             )
         }) {
-            Ok(fd) => {
-                $crate::platform::linux::util::write_checked!(&fd, $value)
+            Ok(fd) => fd,
+
+            Err($crate::platform::linux::errors::SyscallError { error: e, .. }) => {
+                Err::<_, _>(
+                    <$crate::platform::linux::syscalls::Errno as $crate::platform::linux::errors::ErrnoExt>::attach_syscall(
+                        e,
+                        $crate::platform::linux::errors::Syscall::Openat2,
+                    ),
+                )?
             }
-            Err(e) => Err(e.into()),
-        }
-    };
+        };
+
+        $crate::platform::linux::util::write_checked!(&fd, $value);
+    }};
 }
 pub(crate) use open_beneath_and_write;
 
@@ -383,7 +427,7 @@ pub fn is_valid_mapping_tree(mappings: &BTreeMap<Guest, Source<'_>>) -> bool {
                     return false;
                 }
             } else {
-                while let Some((current, is_synthetic)) = stack.pop()
+                while let Some((current, _)) = stack.pop()
                     && !destination.as_ref().starts_with(&current)
                 {
                 }
@@ -455,29 +499,14 @@ pub fn is_valid_fd_policy(policy_map: &BTreeMap<RawFd, FdPolicy<'_>>) -> bool {
 /// retained as close-on-exec fails.
 pub unsafe fn apply_file_descriptor_policy(
     policy_map: &BTreeMap<RawFd, FdPolicy<'_>>,
-) -> Result<(), Error> {
+) -> Result<(), PostCloneGuestError> {
     for (fd, policy) in policy_map {
         if let FdPolicy::Fd(source_fd) = policy {
-            retry_on_interrupt!({
+            //NOTE: this is intentionally leaked so that the fd isn't closed
+            let _fd = retry_on_interrupt!({
                 // SAFETY: caller has checked the validity of the policy
-                if unsafe {
-                    libc::syscall(
-                        linux_general::__NR_dup3.into(),
-                        source_fd.as_raw_fd(),
-                        *fd,
-                        0,
-                    )
-                } < 0
-                {
-                    //SAFETY: we're just getting a value out of this
-                    let errno_location = unsafe { libc::__errno_location() };
-
-                    //SAFETY: this is just dereferencing a location that must
-                    //        exist by the linux standard base
-                    Err(Errno::from_raw_os_error(unsafe { *errno_location }))
-                } else {
-                    Ok(())
-                }
+                unsafe { syscalls::dup3(*source_fd, *fd, 0) }
+                    .map(ManuallyDrop::new)
             })?;
         }
     }
@@ -491,6 +520,7 @@ pub unsafe fn apply_file_descriptor_policy(
             //        second because we're iterating over a btree's keys
             //        and `range_start` is not equal to `fd`
             if unsafe {
+                //TODO: replace with custom syscall wrapper
                 libc::close_range(
                     range_start,
                     fd.saturating_sub(1),
@@ -498,7 +528,10 @@ pub unsafe fn apply_file_descriptor_policy(
                 )
             } != 0
             {
-                Err(io::Error::last_os_error())?;
+                Err(SyscallError {
+                    syscall: Syscall::CloseRange,
+                    error: syscalls::last_errno(),
+                })?;
             }
         }
 
@@ -514,7 +547,10 @@ pub unsafe fn apply_file_descriptor_policy(
         )
     } != 0
     {
-        Err(io::Error::last_os_error())?;
+        Err(SyscallError {
+            syscall: Syscall::CloseRange,
+            error: syscalls::last_errno(),
+        })?;
     }
 
     Ok(())
@@ -527,16 +563,17 @@ pub unsafe fn apply_file_descriptor_policy(
 ///
 /// This function errors if `PR_CAPBSET_DROP(2const)` fails with an error
 /// other than `EINVAL`.
-pub fn drop_bounding_set(other_than: CapabilitySet) -> Result<(), Errno> {
+pub fn drop_bounding_set(
+    other_than: CapabilitySet,
+) -> Result<(), SyscallError> {
     for cap in 0..MAX_LAST_CAP {
-        let flag = CapabilitySet::from_bits_retain(1_u64 << cap);
-        if other_than.contains(flag) {
+        if other_than.contains(CapabilitySet::from_bits_retain(1_u64 << cap)) {
             continue;
         }
 
-        if let Err(e) = rustix::thread::remove_capability_from_bounding_set(flag)
+        if let Err(e) = syscalls::drop_capability_from_bounding_set(cap as _)
             //NOTE: einval implies the capability was not known to the kernel
-            && !matches!(e, Errno::INVAL)
+            && !matches!(e.error, Errno::INVAL)
         {
             return Err(e);
         }
@@ -550,67 +587,20 @@ pub fn drop_bounding_set(other_than: CapabilitySet) -> Result<(), Errno> {
 ///
 /// This function errors if `PR_CAP_AMBIENT(2const)` fails with an error other
 /// than `EINVAL`.
-pub fn set_ambient_capabilities(raise: CapabilitySet) -> Result<(), Errno> {
+pub fn set_ambient_capabilities(
+    raise: CapabilitySet,
+) -> Result<(), SyscallError> {
     for cap in 0..MAX_LAST_CAP {
-        let flag = CapabilitySet::from_bits_retain(1_u64 << cap);
-        if raise.contains(flag)
+        if raise.contains(CapabilitySet::from_bits_retain(1_u64 << cap))
             && let Err(e) =
-                rustix::thread::configure_capability_in_ambient_set(flag, true)
-            && !matches!(e, Errno::INVAL)
+                //NOTE: more c type messiness
+                syscalls::raise_capability_into_ambient_set(cap as _)
+            && !matches!(e.error, Errno::INVAL)
         {
             return Err(e);
         }
     }
     Ok(())
-}
-
-/// Read the value of `/proc/sys/kernel/cap_last_cap`.
-///
-/// # Errors
-///
-/// This function errors if reading the value of `cap_last_cap` fails.
-fn read_cap_last_cap(proc_fd: impl AsFd) -> Result<u8, Errno> {
-    let cap_last_cap_fd = retry_on_interrupt!({
-        rustix::fs::openat2(
-            proc_fd.as_fd(),
-            "sys/kernel/cap_last_cap",
-            OFlags::RDONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::BENEATH,
-        )
-    })?;
-
-    //NOTE: we interpret the limit as a u8 because it's unlikely the kernel
-    //      starts representing the capability bitflags as a type wider than
-    //      a u256. since we fail closed, this assumption is not a problem
-    let mut raw_n = [0; 4];
-    let mut i = 0;
-
-    loop {
-        match rustix::io::read(
-            &cap_last_cap_fd,
-            raw_n.get_mut(i..).ok_or(Errno::INVAL)?,
-        ) {
-            Ok(0) => break,
-            //NOTE: it is very unlikely we will overflow here.
-            //      incomprehensibly unlikely
-            Ok(n_read) => i = i.wrapping_add(n_read),
-            Err(Errno::INTR) => continue,
-            Err(e) => return Err(e),
-        }
-
-        if i == raw_n.len() {
-            return Err(Errno::INVAL);
-        }
-    }
-
-    let n =
-        u8::from_ascii(raw_n.get(..i).ok_or(Errno::INVAL)?.trim_suffix(b"\n"))
-            .map_err(|_| Errno::INVAL)?;
-    if <u8 as Into<u32>>::into(n) >= u64::BITS {
-        return Err(Errno::INVAL);
-    }
-    Ok(n)
 }
 
 /// Time offset.
@@ -641,7 +631,7 @@ pub fn write_timens_offsets(
     proc_fd: impl AsFd,
     monotonic_offset: Option<TimeOffset>,
     boottime_offset: Option<TimeOffset>,
-) -> Result<(), ChildError> {
+) -> Result<(), PostCloneGuestError> {
     /// Sizes the buffer we need to use to avoid heap allocations.
     const fn size_offset_buffer() -> usize {
         signed_decimal_digits_upper_bound::<i64>()
@@ -650,12 +640,14 @@ pub fn write_timens_offsets(
     }
 
     let timens_offsets_fd = retry_on_interrupt!({
-        rustix::fs::openat2(
+        syscalls::openat2(
             proc_fd.as_fd(),
-            "self/timens_offsets",
-            OFlags::WRONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::BENEATH,
+            c"self/timens_offsets",
+            linux::open_how {
+                flags: (linux::O_WRONLY | linux::O_CLOEXEC) as u64,
+                mode: 0,
+                resolve: linux::RESOLVE_BENEATH as u64,
+            },
         )
     })?;
 
@@ -679,11 +671,11 @@ pub fn write_timens_offsets(
 
         check_if_incomplete(
             retry_on_interrupt!({
-                rustix::io::write(
+                syscalls::write(
                     &timens_offsets_fd,
                     offset_buffer
                         .get(..offset)
-                        .ok_or(ChildError::BufferTooSmall)?,
+                        .ok_or(PostCloneGuestOtherError::BufferTooSmall)?,
                 )
             })?,
             offset,
@@ -708,11 +700,11 @@ pub fn write_timens_offsets(
 
         check_if_incomplete(
             retry_on_interrupt!({
-                rustix::io::write(
+                syscalls::write(
                     &timens_offsets_fd,
                     offset_buffer
                         .get(..offset)
-                        .ok_or(ChildError::BufferTooSmall)?,
+                        .ok_or(PostCloneGuestOtherError::BufferTooSmall)?,
                 )
             })?,
             offset,
@@ -737,7 +729,7 @@ pub fn write_simple_uid_gid_map(
     dest_uid: Uid,
     dest_gid: Gid,
     deny_setgroups: bool,
-) -> Result<(), ChildError> {
+) -> Result<(), PostCloneGuestError> {
     /// Sizes the buffer we need to use to avoid heap allocations.
     ///
     /// This is computed from the two ids we need, the two spaces separating
@@ -756,22 +748,27 @@ pub fn write_simple_uid_gid_map(
     let mut offset = 0;
 
     let proc_self_fd = retry_on_interrupt!({
-        rustix::fs::openat2(
+        syscalls::openat2(
             proc_fd.as_fd(),
-            "self",
-            OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
-            Mode::empty(),
-            ResolveFlags::BENEATH,
+            c"self",
+            linux::open_how {
+                flags: (linux::O_PATH | linux::O_CLOEXEC | linux::O_DIRECTORY)
+                    as u64,
+                mode: 0,
+                resolve: linux::RESOLVE_BENEATH as u64,
+            },
         )
     })?;
 
     let uid_map_fd = retry_on_interrupt!({
-        rustix::fs::openat2(
+        syscalls::openat2(
             &proc_self_fd,
-            "uid_map",
-            OFlags::WRONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::BENEATH,
+            c"uid_map",
+            linux::open_how {
+                flags: (linux::O_WRONLY | linux::O_CLOEXEC) as u64,
+                mode: 0,
+                resolve: linux::RESOLVE_BENEATH as u64,
+            },
         )
     })?;
 
@@ -782,11 +779,11 @@ pub fn write_simple_uid_gid_map(
 
     check_if_incomplete(
         retry_on_interrupt!({
-            rustix::io::write(
+            syscalls::write(
                 &uid_map_fd,
                 uid_gid_map_buffer
                     .get(..offset)
-                    .ok_or(ChildError::BufferTooSmall)?,
+                    .ok_or(PostCloneGuestOtherError::BufferTooSmall)?,
             )
         })?,
         offset,
@@ -794,30 +791,34 @@ pub fn write_simple_uid_gid_map(
 
     if deny_setgroups {
         let setgroups_map_fd = retry_on_interrupt!({
-            rustix::fs::openat2(
+            syscalls::openat2(
                 &proc_self_fd,
-                "setgroups",
-                OFlags::WRONLY | OFlags::CLOEXEC,
-                Mode::empty(),
-                ResolveFlags::BENEATH,
+                c"setgroups",
+                linux::open_how {
+                    flags: (linux::O_WRONLY | linux::O_CLOEXEC) as u64,
+                    mode: 0,
+                    resolve: linux::RESOLVE_BENEATH as u64,
+                },
             )
         })?;
 
         check_if_incomplete(
             retry_on_interrupt!({
-                rustix::io::write(&setgroups_map_fd, b"deny\n")
+                syscalls::write(&setgroups_map_fd, b"deny\n")
             })?,
             5,
         )?;
     }
 
     let gid_map_fd = retry_on_interrupt!({
-        rustix::fs::openat2(
+        syscalls::openat2(
             &proc_self_fd,
-            "gid_map",
-            OFlags::WRONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-            ResolveFlags::BENEATH,
+            c"gid_map",
+            linux::open_how {
+                flags: (linux::O_WRONLY | linux::O_CLOEXEC) as u64,
+                mode: 0,
+                resolve: linux::RESOLVE_BENEATH as u64,
+            },
         )
     })?;
 
@@ -830,11 +831,11 @@ pub fn write_simple_uid_gid_map(
 
     check_if_incomplete(
         retry_on_interrupt!({
-            rustix::io::write(
+            syscalls::write(
                 &gid_map_fd,
                 uid_gid_map_buffer
                     .get(..offset)
-                    .ok_or(ChildError::BufferTooSmall)?,
+                    .ok_or(PostCloneGuestOtherError::BufferTooSmall)?,
             )
         })?,
         offset,
@@ -905,18 +906,21 @@ pub enum ResolvedMount<'a> {
 pub fn resolve_nonbind_mappings<'a, I>(
     mappings: I,
     resolved: &mut Vec<ResolvedMount<'a>>,
-) -> Result<usize, ChildError>
+) -> Result<usize, PostCloneGuestError>
 where
     I: IntoIterator<Item = (&'a Guest, &'a Source<'a>)>,
     I::IntoIter: TrustedLen,
 {
     let mappings = mappings.into_iter().enumerate();
 
-    //NOTE: same comment as in `resolve_bind_mappings`
-    (resolved.len() == 0).ok_or(ChildError::InvalidState)?;
+    (resolved.len() == 0)
+        .ok_or(PostCloneGuestOtherError::NonzeroResolvedLen)?;
     (resolved.capacity()
-        >= mappings.size_hint().1.ok_or(ChildError::BufferTooSmall)?)
-    .ok_or(ChildError::BufferTooSmall)?;
+        >= mappings
+            .size_hint()
+            .1
+            .ok_or(PostCloneGuestOtherError::BufferTooSmall)?)
+    .ok_or(PostCloneGuestOtherError::BufferTooSmall)?;
 
     let resolved = resolved.spare_capacity_mut();
 
@@ -930,62 +934,61 @@ where
                 namespace,
                 attributes,
             } => {
-                let fs_fd =
-                    rustix::mount::fsopen("proc", FsOpenFlags::FSOPEN_CLOEXEC)?;
+                let fs_fd = syscalls::fsopen(c"proc", linux::FSOPEN_CLOEXEC)?;
                 let mut buffer = itoa::Buffer::new();
 
-                rustix::mount::fsconfig_set_string(
+                syscalls::fsconfig_set_string(
                     &fs_fd,
-                    "hidepid",
+                    c"hidepid",
                     match hidepid {
-                        ProcHidepid::Off => "off",
-                        ProcHidepid::NoAccess => "noaccess",
-                        ProcHidepid::Invisible => "invisible",
-                        ProcHidepid::Ptraceable => "ptraceable",
+                        ProcHidepid::Off => c"off",
+                        ProcHidepid::NoAccess => c"noaccess",
+                        ProcHidepid::Invisible => c"invisible",
+                        ProcHidepid::Ptraceable => c"ptraceable",
                     },
                 )?;
 
                 if let Some(gid) = gid {
-                    rustix::mount::fsconfig_set_string(
-                        &fs_fd,
-                        "gid",
-                        buffer.format(gid.as_raw()),
+                    //TODO: we should probably pin this to a proper type
+                    buffer.format(gid.as_raw()).with_c_str::<{
+                        unsigned_decimal_digits_upper_bound::<u32>() + 1
+                    }, _, PostCloneGuestError>(
+                        |gid| {
+                            syscalls::fsconfig_set_string(&fs_fd, c"gid", gid)?;
+
+                            Ok(())
+                        },
                     )?;
                 }
 
                 if *subset == ProcSubset::Pid {
-                    rustix::mount::fsconfig_set_string(
-                        &fs_fd, "subset", "pid",
-                    )?;
+                    syscalls::fsconfig_set_string(&fs_fd, c"subset", c"pid")?;
                 }
 
                 if let ProcPidNamespace::Fd(fd) = namespace {
-                    rustix::mount::fsconfig_set_fd(&fs_fd, "pidns", fd)?;
+                    syscalls::fsconfig_set_fd(&fs_fd, c"pidns", fd)?;
                 }
 
-                rustix::mount::fsconfig_create_exclusive(&fs_fd)?;
+                syscalls::fsconfig_cmd_create_excl(&fs_fd)?;
                 ResolvedMount::Fd {
-                    fd: rustix::mount::fsmount(
+                    fd: syscalls::fsmount(
                         fs_fd,
-                        FsMountFlags::FSMOUNT_CLOEXEC,
-                        attributes.into_mount_attr_flags(),
+                        linux::FSMOUNT_CLOEXEC,
+                        attributes.into_mount_attr(),
                     )?,
                     destination,
                     is_directory: true,
                 }
             }
             SourceInner::Mqueue { attributes } => {
-                let fs_fd = rustix::mount::fsopen(
-                    "mqueue",
-                    FsOpenFlags::FSOPEN_CLOEXEC,
-                )?;
+                let fs_fd = syscalls::fsopen(c"mqueue", linux::FSOPEN_CLOEXEC)?;
 
-                rustix::mount::fsconfig_create_exclusive(&fs_fd)?;
+                syscalls::fsconfig_cmd_create_excl(&fs_fd)?;
                 ResolvedMount::Fd {
-                    fd: rustix::mount::fsmount(
+                    fd: syscalls::fsmount(
                         fs_fd,
-                        FsMountFlags::FSMOUNT_CLOEXEC,
-                        attributes.into_mount_attr_flags(),
+                        linux::FSMOUNT_CLOEXEC,
+                        attributes.into_mount_attr(),
                     )?,
                     destination,
                     is_directory: true,
@@ -1007,55 +1010,64 @@ where
                 permissions,
                 attributes,
             } => {
-                let fs_fd = rustix::mount::fsopen(
-                    "tmpfs",
-                    FsOpenFlags::FSOPEN_CLOEXEC,
-                )?;
+                let fs_fd = syscalls::fsopen(c"tmpfs", linux::FSOPEN_CLOEXEC)?;
                 //let mut buffer = itoa::Buffer::new();
 
                 if let Some(size) = size {
-                    rustix::mount::fsconfig_set_string(
-                        &fs_fd,
-                        "size",
-                        size.as_str(),
+                    size.as_str().with_c_str::<{
+                        //TODO: we won't need this anymore once we use a proper
+                        //      enum for the size or something like that, but
+                        //      for now, let's cap it at u32 literal size + 1
+                        //      character for the suffix, and another for the
+                        //      null byte.
+                        unsigned_decimal_digits_upper_bound::<u32>() + 2
+                    }, _, PostCloneGuestError>(
+                        |size| {
+                            syscalls::fsconfig_set_string(
+                                &fs_fd, c"size", size,
+                            )?;
+
+                            Ok(())
+                        },
                     )?;
                 }
 
                 //TODO: uncomment when newuidmap/newgidmap or
                 //      systemd-nsresourced is supported w/ a check prior
                 /*if let Owner::Ids { user, group } = owner {
-                    rustix::mount::fsconfig_set_string(
+                    syscalls::fsconfig_set_string(
                         &fs_fd,
-                        "gid",
+                        c"gid",
+                        //TODO: needs fixing
                         buffer.format(group.as_raw()),
                     )?;
-                    rustix::mount::fsconfig_set_string(
+                    syscalls::fsconfig_set_string(
                         &fs_fd,
-                        "uid",
+                        c"uid",
+                        //TODO: needs fixing
                         buffer.format(user.as_raw()),
                     )?;
                 }*/
 
-                let mut mode = *b"0000";
+                let mut mode = *b"0000\0";
                 let mut permissions = permissions.bits() & 0o7777;
-                for c in mode.iter_mut().rev() {
+                for c in mode.iter_mut().rev().skip(1) {
                     *c = b'0'.saturating_add((permissions & 0o7) as u8);
                     permissions >>= 3;
                 }
 
-                rustix::mount::fsconfig_set_string(
-                    &fs_fd,
-                    "mode",
-                    mode.as_slice(),
-                )?;
+                //SAFETY: we constructed it with a null terminator above
+                syscalls::fsconfig_set_string(&fs_fd, c"mode", unsafe {
+                    CStr::from_bytes_with_nul_unchecked(mode.as_slice())
+                })?;
 
-                rustix::mount::fsconfig_create_exclusive(&fs_fd)?;
+                syscalls::fsconfig_cmd_create_excl(&fs_fd)?;
 
                 ResolvedMount::Fd {
-                    fd: rustix::mount::fsmount(
+                    fd: syscalls::fsmount(
                         fs_fd,
-                        FsMountFlags::FSMOUNT_CLOEXEC,
-                        attributes.into_mount_attr_flags(),
+                        linux::FSMOUNT_CLOEXEC,
+                        attributes.into_mount_attr(),
                     )?,
                     destination,
                     is_directory: true,
@@ -1113,7 +1125,7 @@ pub fn resolve_bind_mappings<'a, 'b, I>(
         // whether or not this is a recursive mount
         bool,
     )>,
-) -> Result<usize, ChildError>
+) -> Result<usize, PostCloneGuestError>
 where
     I: IntoIterator<Item = (&'a Guest, &'a Source<'a>)>,
     I::IntoIter: TrustedLen,
@@ -1121,12 +1133,14 @@ where
 {
     let mappings = mappings.into_iter().enumerate();
 
-    //NOTE: we need a better error for this but i'll just leave it this way for
-    //      now
-    (resolved.len() == 0).ok_or(ChildError::InvalidState)?;
+    (resolved.len() == 0)
+        .ok_or(PostCloneGuestOtherError::NonzeroResolvedLen)?;
     (resolved.capacity()
-        >= mappings.size_hint().1.ok_or(ChildError::BufferTooSmall)?)
-    .ok_or(ChildError::BufferTooSmall)?;
+        >= mappings
+            .size_hint()
+            .1
+            .ok_or(PostCloneGuestOtherError::BufferTooSmall)?)
+    .ok_or(PostCloneGuestOtherError::BufferTooSmall)?;
 
     let resolved = resolved.spare_capacity_mut();
 
@@ -1138,8 +1152,8 @@ where
 
     for (i, (destination, source)) in mappings {
         let mut flags = OPEN_TREE_NAMESPACE
-            | linux_general::OPEN_TREE_CLOEXEC
-            | linux_general::AT_EMPTY_PATH;
+            | linux::OPEN_TREE_CLOEXEC
+            | linux::AT_EMPTY_PATH;
         let mut file_info = None;
         let (dirfd, attributes, is_recursive) = match &source.inner {
             SourceInner::Bind(BindMount::File {
@@ -1159,7 +1173,7 @@ where
                 is_recursive,
             }) => {
                 if *is_recursive {
-                    flags |= linux_general::AT_RECURSIVE;
+                    flags |= linux::AT_RECURSIVE;
                 }
 
                 (fd, *attributes, *is_recursive)
@@ -1167,27 +1181,10 @@ where
             _ => continue,
         };
 
-        //SAFETY: `dirfd` is valid by rustix's rules, everything else
-        //        is standard
-        let namespace_fd = unsafe {
-            libc::syscall(
-                linux_general::__NR_open_tree_attr.into(),
-                dirfd.as_raw_fd() as ffi::c_long,
-                c"".as_ptr(),
-                flags,
-                ptr::null::<linux_general::mount_attr>(),
-                0,
-            )
-        };
-        if namespace_fd == -1 {
-            Err(io::Error::last_os_error())?;
-        }
-
+        let namespace_fd = syscalls::open_tree(dirfd, c"", flags)?;
         namespace_fd_scratch_space.push((
             i,
-            //SAFETY: we just checked it wasn't `-1`, which is the only
-            //        non-file descriptor return code
-            unsafe { OwnedFd::from_raw_fd(namespace_fd as i32) },
+            namespace_fd,
             destination,
             file_info,
             attributes,
@@ -1201,51 +1198,32 @@ where
 
     // SAFETY: only unsharing the mount namespace
     unsafe {
-        rustix::thread::unshare_unsafe(UnshareFlags::NEWNS)?;
+        syscalls::unshare(linux::CLONE_NEWNS as ffi::c_int)?;
     }
 
     let original_ns_flags = OPEN_TREE_NAMESPACE
-        | linux_general::OPEN_TREE_CLOEXEC
-        | linux_general::AT_EMPTY_PATH
-        | linux_general::AT_RECURSIVE;
+        | linux::OPEN_TREE_CLOEXEC
+        | linux::AT_EMPTY_PATH
+        | linux::AT_RECURSIVE;
 
     //NOTE: capture the original mount tree
-    //SAFETY: this is all standard
-    let original_ns = unsafe {
-        libc::syscall(
-            linux_general::__NR_open_tree_attr.into(),
-            libc::AT_FDCWD,
-            c"/".as_ptr(),
-            original_ns_flags,
-            ptr::null::<linux_general::mount_attr>(),
-            0,
-        )
-    };
-    if original_ns == -1 {
-        Err(io::Error::last_os_error())?;
-    }
-
-    //SAFETY: we just checked it wasn't `-1`
-    let original_ns = unsafe { OwnedFd::from_raw_fd(original_ns as i32) };
+    let original_ns = syscalls::open_tree(Cwd, c"/", original_ns_flags)?;
 
     let n_binds = namespace_fd_scratch_space.len();
     for (i, namespace_fd, destination, file_info, attributes, is_recursive) in
         namespace_fd_scratch_space
     {
-        rustix::thread::move_into_link_name_space(
-            namespace_fd.as_fd(),
-            Some(LinkNameSpaceType::Mount),
-        )?;
-        rustix::process::chdir("/")?;
+        syscalls::setns(namespace_fd, linux::CLONE_NEWNS as ffi::c_int)?;
+        syscalls::chdir(c"/")?;
 
         let mut open_tree_flags =
-            linux_general::OPEN_TREE_CLONE | linux_general::OPEN_TREE_CLOEXEC;
+            linux::OPEN_TREE_CLONE | linux::OPEN_TREE_CLOEXEC;
 
         if *is_recursive {
-            open_tree_flags |= linux_general::AT_RECURSIVE;
+            open_tree_flags |= linux::AT_RECURSIVE;
         }
 
-        let mount_attr = linux_general::mount_attr {
+        let mount_attr = linux::mount_attr {
             attr_set: attributes.into_mount_attr().into(),
             attr_clr: 0,
             propagation: 0,
@@ -1253,46 +1231,25 @@ where
         };
 
         let fd = if let Some((name, _)) = &file_info {
-            name.as_bytes().into_with_c_str(|name| {
-                //SAFETY: this is just what the manpage says to do.
-                //        `mount_attr` is valid
-                Ok(unsafe {
-                    libc::syscall(
-                        linux_general::__NR_open_tree_attr.into(),
-                        CWD,
-                        name.as_ptr(),
-                        open_tree_flags,
-                        &mount_attr,
-                        size_of::<linux_general::mount_attr>(),
-                    )
-                })
-            })?
-        } else {
-            //SAFETY: this is just what the manpage says to do. `mount_attr` is
-            //        valid
-            unsafe {
-                libc::syscall(
-                    linux_general::__NR_open_tree_attr.into(),
-                    CWD,
-                    c"/".as_ptr(),
+            name.with_c_str::<{
+                syscalls::PATH_COMPONENT_MAX
+            }, _, PostCloneGuestError>(|name| {
+                syscalls::open_tree_attr(
+                    Cwd,
+                    name,
                     open_tree_flags,
                     &mount_attr,
-                    size_of::<linux_general::mount_attr>(),
                 )
-            }
-        };
-        if fd == -1 {
-            //NOTE: it's probably okay to delay the errno check until here
-            Err(io::Error::last_os_error())?;
-        }
 
-        //SAFETY: we just checked that the fd wasn't `-1`
-        let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+                .map_err(Into::into)
+            })?
+        } else {
+            syscalls::open_tree_attr(Cwd, c"/", open_tree_flags, &mount_attr)?
+        };
 
         if let Some((_, original_fd)) = file_info {
-            //TODO: we need a better error than this
             linux_path::same_file_identity(original_fd.as_fd(), fd.as_fd())?
-                .ok_or(ChildError::InvalidState)?;
+                .ok_or(PostCloneGuestOtherError::BindMappedFileMismatch)?;
         }
 
         //SAFETY: we've ensured at the top of this function that there is
@@ -1306,11 +1263,8 @@ where
         );
     }
 
-    rustix::thread::move_into_link_name_space(
-        original_ns.as_fd(),
-        Some(LinkNameSpaceType::Mount),
-    )?;
-    rustix::process::chdir("/")?;
+    syscalls::setns(original_ns, linux::CLONE_NEWNS as ffi::c_int)?;
+    syscalls::chdir(c"/")?;
 
     Ok(n_binds)
 }

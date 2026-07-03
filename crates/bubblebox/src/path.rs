@@ -7,7 +7,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use crate::errors::Error;
+use crate::errors::{Error, GuestPath as GuestPathError};
 
 /// Path residing within the sandbox.
 ///
@@ -34,7 +34,7 @@ impl Guest {
         let path = path.as_ref();
 
         if !path.is_absolute() {
-            return Err(Error::PathNotAbsolute);
+            return Err(GuestPathError::PathNotAbsolute.into());
         }
 
         let mut normalized = PathBuf::from("/");
@@ -48,10 +48,10 @@ impl Guest {
 
                 Component::Normal(c) => normalized.push(c),
                 Component::ParentDir => {
-                    return Err(Error::PathContainsParent);
+                    return Err(GuestPathError::PathContainsParent.into());
                 }
                 Component::Prefix(_) => {
-                    return Err(Error::GuestPathHasPrefix);
+                    return Err(GuestPathError::GuestPathHasPrefix.into());
                 }
             }
         }

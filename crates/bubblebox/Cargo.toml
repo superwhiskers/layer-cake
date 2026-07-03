@@ -10,13 +10,15 @@ edition = "2024"
 license = "AGPL-3.0-only"
 
 [dependencies]
-rustix.workspace = true
-thiserror.workspace = true
-seccompiler.workspace = true
 libc.workspace = true
 linux-raw-sys.workspace = true
 itoa.workspace = true
-rkyv.workspace = true
+bytemuck.workspace = true
+bitflags.workspace = true
+
+[dependencies.seccompiler]
+workspace = true
+optional = true
 
 [dependencies.dbus]
 workspace = true
@@ -27,11 +29,14 @@ workspace = true
 optional = true
 
 [features]
-default = ["systemd-cgroups"]
+default = []
 
 # Adds support for automatically acquiring a part of the cgroups hierarchy
 # through systemd
 systemd-cgroups = ["dep:dbus", "dep:uuid"]
+
+# Adds support for simpler seccomp initialization with the seccompiler crate.
+seccomp = ["dep:seccompiler"]
 
 [lints]
 workspace = true

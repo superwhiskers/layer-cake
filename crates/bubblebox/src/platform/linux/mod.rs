@@ -14,9 +14,11 @@
 //      quite large and messy
 
 pub(crate) mod cgroups;
+pub mod errors;
 pub mod mapping;
 pub(crate) mod netlink;
 pub mod normalization;
-pub mod policy;
 pub mod path;
+pub mod policy;
+pub(crate) mod syscalls;
 pub(crate) mod util;

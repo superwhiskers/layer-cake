@@ -14,10 +14,14 @@ http = "1"
 hyper-rustls = "0.27"
 seccompiler = "0.5"
 simd-json = "0.17"
-thiserror = "2"
 libc = "0.2"
 itoa = "1"
 dbus = "0.9"
+bitflags = "2"
+
+[workspace.dependencies.bytemuck]
+version = "1"
+features = ["derive"]
 
 [workspace.dependencies.uuid]
 version = "1"
@@ -25,29 +29,7 @@ features = ["v4"]
 
 [workspace.dependencies.linux-raw-sys]
 version = "0.12"
-features = ["netlink", "net"]
-
-[workspace.dependencies.rkyv]
-version = "0.8"
-default-features = false
-features = ["bytecheck", "std"]
-
-[workspace.dependencies.rustix]
-version = "1"
-default-features = false
-features = [
-  "fs",
-  "process",
-  "thread",
-  "mount",
-  # this feature is necessary because `Signal` is only exposed here for
-  # some reason
-  "io_uring",
-  "system",
-  "pipe",
-  "event",
-  "net"
-]
+features = ["netlink", "net", "errno", "general", "ioctl", "prctl"]
 
 [workspace.dependencies.futures]
 version = "0.3"

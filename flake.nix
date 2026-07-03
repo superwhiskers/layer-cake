@@ -34,8 +34,8 @@
       devShells = forAllSystems (
         { pkgs, ... }:
         let
-
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          cross = pkgs.pkgsCross.gnu32;
         in
         {
           default = pkgs.mkShell {
@@ -45,7 +45,14 @@
               pkgs.pkg-config
               pkgs.dbus.lib
               pkgs.dbus.dev
+
+              # used for testing 32-bit compatibility
+              cross.stdenv.cc
             ];
+
+            shellHook = ''
+              export CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER=${cross.stdenv.cc}/bin/${cross.stdenv.cc.targetPrefix}cc
+            '';
           };
         }
       );

@@ -14,54 +14,40 @@
 //      labels for the program
 //TODO: add support for io_uring syscall denylists using the new api introduced
 //      in kernel 7.0
-//TODO: write an extension trait for rustix's `Errno` that allows you to wrap
-//      the errno with a syscall name (stored in an enum) for provenance
 //TODO: in child code, use `Vec::push_within_capacity` to ensure we don't
 //      exceed the capacity and allocate
 
-use linux_raw_sys::general as linux_general;
-use rkyv::{
-    Archive,
-    rancor::Failure,
-    ser::{
-        Serializer, allocator::SubAllocator, sharing::Unshare, writer::IoWriter,
-    },
-    util::Align,
-};
-use rustix::{
-    event::{PollFd, PollFlags, Timespec},
-    fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
-    fs::{AtFlags, CWD, Gid, Mode, OFlags, ResolveFlags, StatxFlags, Uid},
-    io::Errno,
-    //NOTE: why is it exposed here only???
-    io_uring::Signal,
-    mount::{
-        FsMountFlags, FsOpenFlags, MountAttrFlags, MountPropagationFlags,
-        MoveMountFlags, UnmountFlags,
-    },
-    pipe::PipeFlags,
-    process::{Pid, PidfdFlags, WaitId, WaitIdOptions},
-    thread::{CapabilitySet, CapabilitySets, LinkNameSpaceType, UnshareFlags},
-};
-use seccompiler::SeccompFilter;
+use linux_raw_sys::general as linux;
 use std::{
     collections::BTreeMap,
     ffi::{self, OsStr},
-    io::{self, Read, Write},
+    io::{Read, Write},
     mem::ManuallyDrop,
-    os::unix::ffi::OsStrExt,
+    os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
     panic,
 };
 
+#[cfg(feature = "seccomp")]
+use seccompiler::SeccompFilter;
+
 use super::{
     cgroups::{self, Cgroups},
-    mapping::{File, MountAttributes, Source},
+    errors::{
+        Error, PostCloneGuest as PostCloneGuestError,
+        PostCloneGuestOther as PostCloneGuestOtherError, PostCloneGuestWire,
+        PostCloneHost as PostCloneHostError, PreClone as PreCloneError,
+        ResultSyscallExt, SyscallError,
+    },
+    mapping::{File, Mode, MountAttributes, Source},
     netlink,
+    syscalls::{
+        self, CapabilitySet, CapabilitySets, CloneResult, Cwd, Errno, Gid, Pid,
+        PollFd, Uid, WaitFor, WithCStr,
+    },
     util::{self, FdPolicy, FdReadWrite, ResolvedMount, TimeOffset},
 };
 use crate::{
     command::{Child, Command, Sandbox},
-    errors::{ChildError, Error},
     path::Guest,
 };
 
@@ -74,10 +60,12 @@ pub struct Policy<'a, CgroupsBackend> {
     mappings: BTreeMap<Guest, Source<'a>>,
 
     /// Seccomp policy.
+    //TODO: make this not have a hard dependency upon seccompiler to work
+    #[cfg(feature = "seccomp")]
     seccomp: Option<SeccompFilter>,
 
     /// Namespaces.
-    namespaces: Namespaces,
+    namespaces: Namespaces<'a>,
 
     /// Cgroups.
     cgroups: Cgroups<CgroupsBackend>,
@@ -192,7 +180,7 @@ where
     ///
     /// In order for this method to return in the parent, the `child_callback`
     /// must do one of the following:
-    /// - Return a `ChildError`.
+    /// - Return a [`PostCloneGuestError`].
     /// - Call `execve(2)`, `_exit(2)`, or another syscall which will trigger fd
     ///   close-on-exit behavior.
     /// - Close the writing end of the file descriptor used to pass errors back
@@ -221,26 +209,29 @@ where
     /// This method errors if the namespace setup fails.
     unsafe fn clone_into(
         &self,
-        child_callback: impl FnOnce() -> Result<!, ChildError>,
+        child_callback: impl FnOnce() -> Result<!, PostCloneGuestError>,
         mut cgroups_state: CgroupsBackend::State,
     ) -> Result<(Pid, OwnedFd, CgroupsBackend::State), Error> {
         util::is_valid_fd_policy(&self.file_descriptors)
-            .ok_or(Error::InvalidFdPolicy)?;
+            .ok_or(PreCloneError::InvalidFdPolicy)?;
         util::is_valid_mapping_tree(&self.mappings)
-            .ok_or(Error::InvalidMappings)?;
+            .ok_or(PreCloneError::InvalidMappings)?;
 
         let parent_pidfd = if self.die_with_parent_thread {
-            Some(rustix::process::pidfd_open(
-                rustix::process::getpid(),
-                PidfdFlags::empty(),
-            )?)
+            Some(
+                syscalls::pidfd_open(
+                    syscalls::getpid().wrap_error::<PreCloneError>()?,
+                    0,
+                )
+                .wrap_error::<PreCloneError>()?,
+            )
         } else {
             None
         };
 
         //NOTE: necessary invariant for unprivileged userns
-        let host_uid = rustix::process::geteuid();
-        let host_gid = rustix::process::getegid();
+        let host_uid = syscalls::geteuid().wrap_error::<PreCloneError>()?;
+        let host_gid = syscalls::getegid().wrap_error::<PreCloneError>()?;
 
         // this needs to be allocated all the way up here because we can't
         // allocate once we `clone3(2)`.
@@ -249,38 +240,37 @@ where
             Vec::with_capacity(self.mappings.len());
 
         //FIXME: send success over this too. work out how to do this
-        let (host_pipe, guest_pipe) =
-            rustix::pipe::pipe_with(PipeFlags::CLOEXEC)?;
+        let (host_pipe, guest_pipe) = syscalls::pipe2(linux::O_CLOEXEC as i32)
+            .wrap_error::<PreCloneError>()?;
 
         // this is always unshared. see the documentation for `Namespaces` for
         // more details. the third is to ensure we are handed a pidfd to
         // the child process.
-        let mut clone_flags =
-            linux_general::CLONE_NEWUSER | linux_general::CLONE_PIDFD;
+        let mut clone_flags = linux::CLONE_NEWUSER | linux::CLONE_PIDFD;
 
         if !self.namespaces.ipc.is_shared() {
-            clone_flags |= linux_general::CLONE_NEWIPC;
+            clone_flags |= linux::CLONE_NEWIPC;
         }
 
         if !self.namespaces.pid.is_shared() {
-            clone_flags |= linux_general::CLONE_NEWPID;
+            clone_flags |= linux::CLONE_NEWPID;
         }
 
         if !self.namespaces.network.is_shared() {
-            clone_flags |= linux_general::CLONE_NEWNET;
+            clone_flags |= linux::CLONE_NEWNET;
         }
 
         if !self.namespaces.uts.is_shared() {
-            clone_flags |= linux_general::CLONE_NEWUTS;
+            clone_flags |= linux::CLONE_NEWUTS;
         }
 
         let mut child_pidfd: ffi::c_int = -1;
-        let mut clone_args = linux_general::clone_args {
+        let mut clone_args = linux::clone_args {
             flags: clone_flags.into(),
-            pidfd: <*mut _>::addr(&mut child_pidfd) as linux_general::__u64,
+            pidfd: <*mut _>::addr(&mut child_pidfd) as linux::__u64,
             child_tid: 0,
             parent_tid: 0,
-            exit_signal: linux_general::SIGCHLD.into(),
+            exit_signal: linux::SIGCHLD.into(),
             stack: 0,
             stack_size: 0,
             tls: 0,
@@ -295,8 +285,8 @@ where
             //      backend may have a post-clone hook that needs to do
             //      something related to it, so we wait until all of the
             //      hooks have (presumably) finished
-            clone_args.cgroup = cgroup_fd?.as_raw_fd() as linux_general::__u64;
-            clone_args.flags |= linux_general::CLONE_INTO_CGROUP;
+            clone_args.cgroup = cgroup_fd?.as_raw_fd() as linux::__u64;
+            clone_args.flags |= linux::CLONE_INTO_CGROUP;
         }
 
         //SAFETY: the safety documentation for this method applies here:
@@ -304,49 +294,20 @@ where
         //   child process after clone
         // - we don't do things unsafe to perform after clone in the child (it's
         //   not super well specified, but it's "like async-signal-safety")
-        let child_pid = unsafe {
-            libc::syscall(
-                linux_general::__NR_clone3.into(),
-                &clone_args,
-                //NOTE: might be better to hardcode it to the size of the
-                //      structure up to the fields we use
-                size_of::<linux_general::clone_args>(),
-            )
+        let clone_result = unsafe {
+            syscalls::clone3(clone_args).wrap_error::<PreCloneError>()?
         };
-        if child_pid == -1 {
-            //NOTE: could probably provide better diagnostics here
-            Err(io::Error::last_os_error())?;
-        }
-
         let guest_pipe = guest_pipe.into_raw_fd();
 
-        if child_pid != 0 {
-            debug_assert!(
-                child_pid > 0,
-                "`child_pid` should be greater than zero",
-            );
-
+        if let CloneResult::Parent(child_pid) = clone_result {
             //SAFETY: there are no error conditions which would cause the
             //        syscall to succeed but the pidfd to not be created
             let child_pidfd = unsafe { OwnedFd::from_raw_fd(child_pidfd) };
 
             //SAFETY: we want it to leak into the child but we also need to
             //        read from it and rely upon its closure in the child
-            unsafe { rustix::io::close(guest_pipe) };
+            unsafe { syscalls::close(guest_pipe) };
             let host_pipe = FdReadWrite::new(host_pipe);
-
-            //NOTE: this must fit within an i32 by the documentation of
-            //      `clone3(2)`
-            //SAFETY: we just checked that it wasn't zero, which is the
-            //        only contract this method requires. negative return
-            //        values of `clone3(2)` other than `-1` are imposible by
-            //        contract
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "the return value of clone3(2) will fit within a pid"
-            )]
-            let child_pid =
-                unsafe { Pid::from_raw_unchecked(child_pid as i32) };
 
             return match self.host_post_clone(
                 &mut cgroups_state,
@@ -360,20 +321,23 @@ where
                     //      everything. maybe provide a custom error type that
                     //      preserves everything
 
-                    let _pidfd_result = rustix::process::pidfd_send_signal(
-                        child_pidfd.as_fd(),
-                        Signal::KILL,
+                    let _pidfd_result = syscalls::pidfd_send_signal(
+                        &child_pidfd,
+                        linux::SIGKILL as i32,
+                        0,
                     );
-                    let _waitid_result = rustix::process::waitid(
-                        WaitId::PidFd(child_pidfd.as_fd()),
-                        WaitIdOptions::EXITED,
+                    let _waitid_result = syscalls::waitid(
+                        WaitFor::PidFd(child_pidfd.as_fd()),
+                        linux::WEXITED as i32,
                     );
                     let _teardown_result = self.cgroups.teardown(cgroups_state);
 
-                    Err(err)
+                    Err(err.into())
                 }
             };
         }
+
+        //TODO: consider using a `match` here to branch on parent vs child.
 
         //NOTE: this is where the child process begins
 
@@ -382,7 +346,7 @@ where
             ManuallyDrop::new(namespace_fd_scratch_space);
 
         //SAFETY: we're in the child, we own this fd now
-        let guest_pipe =
+        let mut guest_pipe =
             FdReadWrite::new(unsafe { OwnedFd::from_raw_fd(guest_pipe) });
 
         panic::always_abort();
@@ -397,37 +361,13 @@ where
             host_gid,
         );
 
-        let mut serializer = Serializer::new(
-            IoWriter::new(guest_pipe),
-            SubAllocator::empty(),
-            Unshare,
-        );
+        let wire_error: PostCloneGuestWire = e.into();
+        guest_pipe
+            .write_all(bytemuck::bytes_of(&wire_error))
+            .expect("unable to write the serialized error to the pipe");
+        drop(guest_pipe);
 
-        if rkyv::api::serialize_using::<_, Failure>(&e, &mut serializer)
-            .is_err()
-        {
-            //NOTE: writing a single byte will still signal to the parent that
-            //      an error occurred
-            let mut guest_pipe = serializer.into_writer().into_inner();
-
-            #[expect(
-                clippy::expect_used,
-                reason = "we have no other way of propagating errors in this path"
-            )]
-            util::check_if_incomplete(
-                guest_pipe
-                    .write(&[0xe])
-                    .expect("unable to write a single byte to the error pipe"),
-                1,
-            )
-            .expect("unable to write an error sentinel to the pipe");
-        } else {
-            //NOTE: ensure we close the writing end of the pipe
-            drop(serializer);
-        }
-
-        //SAFETY: this is exactly how you call _exit
-        unsafe { libc::_exit(-1) };
+        syscalls::exit(-1);
     }
 
     /// Helper method for `clone_into`.
@@ -446,11 +386,12 @@ where
         self.cgroups
             .host_post_clone_hook(cgroups_state, child_pid)?;
 
-        //NOTE: we could read a fixed size here but we control the writer, so
-        //      unless untrusted code ran in the callback (which should not
-        //      happen), this is safe
-        let mut potential_error = Align(Vec::new());
-        let _ = host_pipe.read_to_end(&mut potential_error)?;
+        //TODO: use read_array here once we have serialization of an "ok"
+        //      status working
+        let mut potential_error = Vec::new();
+        let _ = host_pipe
+            .read_to_end(&mut potential_error)
+            .map_err(PostCloneHostError::StdIo)?;
 
         if potential_error.is_empty() {
             return Ok(());
@@ -458,23 +399,17 @@ where
 
         //NOTE: ensure the child doesn't become a zombie. we ignore the
         //      error here to avoid masking the child error
-        let _ = rustix::process::waitid(
-            WaitId::PidFd(child_pidfd.as_fd()),
-            WaitIdOptions::EXITED,
+        let _ = syscalls::waitid(
+            WaitFor::PidFd(child_pidfd.as_fd()),
+            linux::WEXITED as i32,
         );
 
-        let archived =
-            rkyv::access::<<ChildError as Archive>::Archived, Failure>(
-                &potential_error,
-            )
-            .map_err(|_| {
-                ChildError::UnspecifiedError(potential_error.first().copied())
-            })?;
-
-        Err(
-            rkyv::deserialize::<ChildError, rkyv::rancor::Error>(archived)?
-                .into(),
+        Err(<PostCloneGuestWire as Into<PostCloneGuestError>>::into(
+            *bytemuck::from_bytes::<PostCloneGuestWire>(
+                potential_error.as_slice(),
+            ),
         )
+        .into())
     }
 
     /// Helper method for `clone_into`.
@@ -485,7 +420,7 @@ where
     #[inline(always)]
     fn guest_post_clone<'b, 'c>(
         &'b self,
-        child_callback: impl FnOnce() -> Result<!, ChildError>,
+        child_callback: impl FnOnce() -> Result<!, PostCloneGuestError>,
         cgroups_state: CgroupsBackend::State,
         parent_pidfd: Option<OwnedFd>,
         mut resolved_mappings: ManuallyDrop<Vec<ResolvedMount<'b>>>,
@@ -501,7 +436,7 @@ where
         >,
         host_uid: Uid,
         host_gid: Gid,
-    ) -> Result<!, ChildError>
+    ) -> Result<!, PostCloneGuestError>
     where
         'a: 'c,
         'b: 'c,
@@ -510,28 +445,30 @@ where
         let guest_gid = self.gid.unwrap_or(host_gid);
 
         if let Some(parent_pidfd) = parent_pidfd {
-            rustix::process::set_parent_process_death_signal(Some(
-                Signal::KILL,
-            ))?;
+            syscalls::set_parent_process_death_signal(
+                linux::SIGKILL as ffi::c_int,
+            )?;
 
-            let mut fds = [PollFd::new(&parent_pidfd, PollFlags::IN)];
-            let timespec = Timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            };
+            let mut fds =
+                [PollFd::new(parent_pidfd.as_fd(), linux::POLLIN as i16)];
 
             //NOTE: this avoids a race where the parent process dies prior
             //      to us checking liveness
             if util::retry_on_interrupt!({
-                rustix::event::poll(&mut fds, Some(&timespec))
+                syscalls::ppoll(
+                    &mut fds,
+                    Some(linux::__kernel_timespec {
+                        tv_sec: 0,
+                        tv_nsec: 0,
+                    }),
+                )
             })? != 0
             {
-                //SAFETY: this is exactly how you call _exit
-                unsafe { libc::_exit(-1) };
+                syscalls::exit(-1);
             }
         }
 
-        rustix::thread::set_no_new_privs(true)?;
+        syscalls::set_no_new_privs()?;
         util::drop_bounding_set(self.target_capabilities)?;
         util::reset_signal_dispositions()?;
 
@@ -543,7 +480,7 @@ where
         //      aware of its place in the hierarchy to a degree
         //SAFETY: this isn't unsharing the file descriptors
         unsafe {
-            rustix::thread::unshare_unsafe(UnshareFlags::NEWCGROUP)?;
+            syscalls::unshare(linux::CLONE_NEWCGROUP as ffi::c_int)?;
         }
 
         //NOTE: we track the number of resolved mappings as rust can
@@ -556,16 +493,27 @@ where
         )?;
 
         let guest_proc_fs_fd =
-            rustix::mount::fsopen("proc", FsOpenFlags::FSOPEN_CLOEXEC)?;
+            syscalls::fsopen(c"proc", linux::FSOPEN_CLOEXEC)?;
 
-        rustix::mount::fsconfig_create_exclusive(&guest_proc_fs_fd)?;
+        //NOTE: we set these to increase the chance we pass the
+        //      `mount_too_revealing` check. the latter isn't important for it,
+        //      but we set it anyway as we don't need more than that
+        //TODO: set nosuid,nodev,noexec too just in case
+        syscalls::fsconfig_set_string(&guest_proc_fs_fd, c"subset", c"pid")?;
+        syscalls::fsconfig_set_string(
+            &guest_proc_fs_fd,
+            c"hidepid",
+            c"ptraceable",
+        )?;
 
-        let guest_proc_fd = rustix::mount::fsmount(
+        syscalls::fsconfig_cmd_create_excl(&guest_proc_fs_fd)?;
+
+        let guest_proc_fd = syscalls::fsmount(
             guest_proc_fs_fd,
-            FsMountFlags::FSMOUNT_CLOEXEC,
-            MountAttrFlags::MOUNT_ATTR_NOSUID
-                | MountAttrFlags::MOUNT_ATTR_NOEXEC
-                | MountAttrFlags::MOUNT_ATTR_NODEV,
+            linux::FSMOUNT_CLOEXEC,
+            linux::MOUNT_ATTR_NOSUID
+                | linux::MOUNT_ATTR_NOEXEC
+                | linux::MOUNT_ATTR_NODEV,
         )?;
 
         util::write_simple_uid_gid_map(
@@ -580,7 +528,7 @@ where
         if let Namespace::Unshared(ref time) = self.namespaces.time {
             //SAFETY: this doesn't affect any state in the child that we
             //        care about
-            unsafe { rustix::thread::unshare_unsafe(UnshareFlags::NEWTIME) }?;
+            unsafe { syscalls::unshare(linux::CLONE_NEWTIME as ffi::c_int)? };
 
             util::write_timens_offsets(
                 &guest_proc_fd,
@@ -589,40 +537,31 @@ where
             )?;
 
             let timens_fd = util::retry_on_interrupt!({
-                rustix::fs::openat2(
+                syscalls::openat2(
                     &guest_proc_fd,
-                    "self/ns/time_for_children",
-                    OFlags::RDONLY | OFlags::CLOEXEC,
-                    Mode::empty(),
-                    //NOTE: we can't use beneath/in_root because those
-                    //      disable magic link resolution
-                    ResolveFlags::empty(),
+                    c"self/ns/time_for_children",
+                    linux::open_how {
+                        flags: (linux::O_RDONLY | linux::O_CLOEXEC) as u64,
+                        mode: 0,
+                        //NOTE: we can't use beneath/in_root because those
+                        //      disable magic link resolution
+                        resolve: 0,
+                    },
                 )
             })?;
 
-            rustix::thread::move_into_link_name_space(
-                timens_fd.as_fd(),
-                Some(LinkNameSpaceType::Time),
-            )?;
+            syscalls::setns(timens_fd, linux::CLONE_NEWTIME as ffi::c_int)?;
         }
 
         //NOTE: we want to ensure our bind mounts are not tampered with
-        let old_umask = rustix::process::umask(Mode::empty());
+        let old_umask = syscalls::umask(0)?;
 
-        rustix::mount::mount_change(
-            "/",
-            MountPropagationFlags::REC | MountPropagationFlags::PRIVATE,
+        //FIXME: why is it just this one that triggers on 32-bit
+        #[allow(trivial_numeric_casts)]
+        syscalls::update_mount_propagation_flags(
+            c"/",
+            (linux::MS_REC | linux::MS_PRIVATE) as ffi::c_ulong,
         )?;
-
-        let host_root_fd = util::retry_on_interrupt!({
-            rustix::fs::openat2(
-                CWD,
-                "/",
-                OFlags::PATH | OFlags::CLOEXEC | OFlags::DIRECTORY,
-                Mode::empty(),
-                ResolveFlags::empty(),
-            )
-        })?;
 
         n_resolved += util::resolve_nonbind_mappings(
             &self.mappings,
@@ -630,27 +569,27 @@ where
         )?;
 
         //NOTE: we need a better error here
-        (n_resolved == self.mappings.len()).ok_or(ChildError::InvalidState)?;
+        (n_resolved == self.mappings.len())
+            .ok_or(PostCloneGuestOtherError::MappingsLengthMismatch)?;
 
         //SAFETY: we just checked the length matches the number of mappings
         //        exactly
         unsafe { resolved_mappings.set_len(n_resolved) };
 
         let guest_root_fs_fd =
-            rustix::mount::fsopen("tmpfs", FsOpenFlags::FSOPEN_CLOEXEC)?;
+            syscalls::fsopen(c"tmpfs", linux::FSOPEN_CLOEXEC)?;
 
         //TODO: consider setting restrictions on the size of the root
         //      tmpfs
 
-        rustix::mount::fsconfig_set_string(&guest_root_fs_fd, "mode", "755")?;
+        syscalls::fsconfig_set_string(&guest_root_fs_fd, c"mode", c"755")?;
 
-        rustix::mount::fsconfig_create_exclusive(&guest_root_fs_fd)?;
+        syscalls::fsconfig_cmd_create_excl(&guest_root_fs_fd)?;
 
-        let guest_root_fd = rustix::mount::fsmount(
+        let guest_root_fd = syscalls::fsmount(
             guest_root_fs_fd,
-            FsMountFlags::FSMOUNT_CLOEXEC,
-            MountAttrFlags::MOUNT_ATTR_NOSUID
-                | MountAttrFlags::MOUNT_ATTR_NODEV,
+            linux::FSMOUNT_CLOEXEC,
+            linux::MOUNT_ATTR_NOSUID | linux::MOUNT_ATTR_NODEV,
         )?;
 
         //TODO: we could probably take the following and the code above
@@ -666,40 +605,49 @@ where
                     let (parent_fd, file_name) =
                         util::open_parent_in_root(&guest_root_fd, destination)?;
 
-                    match rustix::fs::statx(
-                        &parent_fd,
-                        file_name.as_bytes(),
-                        AtFlags::SYMLINK_NOFOLLOW,
-                        StatxFlags::TYPE,
-                    ) {
-                        Ok(statx) => {
-                            if u32::from(statx.stx_mode) & linux_general::S_IFMT
-                                != linux_general::S_IFDIR
-                            {
-                                Err(ChildError::InvalidDirectoryMountPoint)?;
-                            }
-                        }
-                        Err(Errno::NOENT) => {
-                            rustix::fs::mkdirat(
+                    file_name.with_c_str::<{
+                        syscalls::PATH_COMPONENT_MAX
+                    }, _, PostCloneGuestError>(
+                        |file_name| {
+                            match syscalls::statx(
                                 &parent_fd,
-                                file_name.as_bytes(),
-                                //NOTE: 0o755
-                                Mode::RWXU
-                                    | Mode::RGRP
-                                    | Mode::XGRP
-                                    | Mode::ROTH
-                                    | Mode::XOTH,
-                            )?;
-                        }
-                        Err(e) => Err(e)?,
-                    }
+                                file_name,
+                                linux::AT_SYMLINK_NOFOLLOW as i32,
+                                linux::STATX_TYPE,
+                            ) {
+                                Ok(statx) => {
+                                    if u32::from(statx.stx_mode) & linux::S_IFMT
+                                        != linux::S_IFDIR
+                                    {
+                                        Err(PostCloneGuestOtherError::InvalidDirectoryMountPoint)?;
+                                    }
+                                }
+                                Err(SyscallError { error: Errno::NOENT, .. }) => {
+                                    syscalls::mkdirat(
+                                        &parent_fd,
+                                        file_name,
+                                        (Mode::RWXU
+                                            | Mode::RGRP
+                                            | Mode::XGRP
+                                            | Mode::ROTH
+                                            | Mode::XOTH).bits(),
+                                    )
+                                    ?;
+                                }
+                                Err(e) => Err(e)?,
+                            }
 
-                    rustix::mount::move_mount(
-                        fd,
-                        "",
-                        &parent_fd,
-                        file_name.as_bytes(),
-                        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+                            syscalls::move_mount(
+                                fd,
+                                c"",
+                                &parent_fd,
+                                file_name,
+                                linux::MOVE_MOUNT_F_EMPTY_PATH,
+                            )
+                            ?;
+
+                            Ok(())
+                        }
                     )?;
                 }
                 ResolvedMount::Fd {
@@ -708,43 +656,61 @@ where
                     let (parent_fd, file_name) =
                         util::open_parent_in_root(&guest_root_fd, destination)?;
 
-                    match rustix::fs::statx(
-                        &parent_fd,
-                        file_name.as_bytes(),
-                        AtFlags::SYMLINK_NOFOLLOW,
-                        StatxFlags::TYPE,
-                    ) {
-                        Ok(statx) => {
-                            if u32::from(statx.stx_mode) & linux_general::S_IFMT
-                                != linux_general::S_IFREG
-                            {
-                                Err(ChildError::InvalidRegularFileMountPoint)?;
+                    file_name.with_c_str::<{
+                        syscalls::PATH_COMPONENT_MAX
+                    }, _, PostCloneGuestError>(
+                        |file_name| {
+                            match syscalls::statx(
+                                &parent_fd,
+                                file_name,
+                                linux::AT_SYMLINK_NOFOLLOW as i32,
+                                linux::STATX_TYPE,
+                            ) {
+                                Ok(statx) => {
+                                    if u32::from(statx.stx_mode) & linux::S_IFMT
+                                        != linux::S_IFREG
+                                    {
+                                        Err(PostCloneGuestOtherError::InvalidRegularFileMountPoint)?;
+                                    }
+                                }
+                                Err(SyscallError { error: Errno::NOENT, .. }) => {
+                                    //NOTE: we only care about creating it
+                                    drop(
+                                        util::retry_on_interrupt!({
+                                            syscalls::openat2(
+                                                &parent_fd,
+                                                file_name,
+                                                linux::open_how {
+                                                    flags: (linux::O_CREAT
+                                                        | linux::O_WRONLY)
+                                                        as u64,
+                                                    mode: (linux::S_IRUSR
+                                                        | linux::S_IWUSR
+                                                        | linux::S_IRGRP
+                                                        | linux::S_IROTH)
+                                                        as u64,
+                                                    resolve: linux::RESOLVE_BENEATH
+                                                        as u64,
+                                                },
+                                            )
+                                        })
+                                        ?
+                                    );
+                                }
+                                Err(e) => Err(e)?,
                             }
-                        }
-                        Err(Errno::NOENT) => {
-                            //NOTE: we only care about creating it
-                            drop(util::retry_on_interrupt!({
-                                rustix::fs::openat2(
-                                    &parent_fd,
-                                    file_name.as_bytes(),
-                                    OFlags::CREATE | OFlags::WRONLY,
-                                    Mode::RUSR
-                                        | Mode::WUSR
-                                        | Mode::RGRP
-                                        | Mode::ROTH,
-                                    ResolveFlags::BENEATH,
-                                )
-                            })?);
-                        }
-                        Err(e) => Err(e)?,
-                    }
 
-                    rustix::mount::move_mount(
-                        fd,
-                        "",
-                        &parent_fd,
-                        file_name.as_bytes(),
-                        MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH,
+                            syscalls::move_mount(
+                                fd,
+                                c"",
+                                &parent_fd,
+                                file_name,
+                                linux::MOVE_MOUNT_F_EMPTY_PATH,
+                            )
+                            ?;
+
+                            Ok(())
+                        }
                     )?;
                 }
                 ResolvedMount::File {
@@ -759,30 +725,44 @@ where
                     let (parent_fd, file_name) =
                         util::open_parent_in_root(&guest_root_fd, destination)?;
 
-                    if !matches!(
-                        rustix::fs::statx(
-                            &parent_fd,
-                            file_name.as_bytes(),
-                            AtFlags::SYMLINK_NOFOLLOW,
-                            StatxFlags::empty(),
-                        ),
-                        Err(Errno::NOENT)
-                    ) {
-                        //TODO: relax this restriction by truncating the
-                        //      existing file and chmod-ing it
-                        Err(ChildError::DestinationExisted)?;
-                    }
+                    file_name.with_c_str::<{
+                        syscalls::PATH_COMPONENT_MAX
+                    }, _, PostCloneGuestError>(
+                        |file_name| {
+                            if !matches!(
+                                syscalls::statx(
+                                    &parent_fd,
+                                    file_name,
+                                    linux::AT_SYMLINK_NOFOLLOW as i32,
+                                    0,
+                                ),
+                                Err(SyscallError { error: Errno::NOENT, .. })
+                            ) {
+                                //TODO: relax this restriction by truncating the
+                                //      existing file and chmod-ing it
+                                Err(PostCloneGuestOtherError::DestinationExists)?;
+                            }
 
-                    FdReadWrite::new(util::retry_on_interrupt!({
-                        rustix::fs::openat2(
-                            &parent_fd,
-                            file_name.as_bytes(),
-                            OFlags::CREATE | OFlags::RDWR,
-                            *permissions,
-                            ResolveFlags::BENEATH,
-                        )
-                    })?)
-                    .write_all(contents)?;
+                            FdReadWrite::new(
+                                util::retry_on_interrupt!({
+                                    syscalls::openat2(
+                                        &parent_fd,
+                                        file_name,
+                                        linux::open_how {
+                                            flags: (linux::O_CREAT | linux::O_RDWR)
+                                                as u64,
+                                            mode: permissions.bits() as u64,
+                                            resolve: linux::RESOLVE_BENEATH as u64,
+                                        },
+                                    )
+                                })
+                                ?
+                             )
+                            .write_all(contents)?;
+
+                            Ok(())
+                        }
+                    )?;
                 }
                 ResolvedMount::Directory {
                     owner,
@@ -792,77 +772,77 @@ where
                     let (parent_fd, file_name) =
                         util::open_parent_in_root(&guest_root_fd, destination)?;
 
-                    if !matches!(
-                        rustix::fs::statx(
-                            &parent_fd,
-                            file_name.as_bytes(),
-                            AtFlags::SYMLINK_NOFOLLOW,
-                            StatxFlags::empty(),
-                        ),
-                        Err(Errno::NOENT)
-                    ) {
-                        //TODO: and relax this one
-                        Err(ChildError::DestinationExisted)?;
-                    }
+                    file_name.with_c_str::<{
+                        syscalls::PATH_COMPONENT_MAX
+                    }, _, PostCloneGuestError>(
+                        |file_name| {
+                            if !matches!(
+                                syscalls::statx(
+                                    &parent_fd,
+                                    file_name,
+                                    linux::AT_SYMLINK_NOFOLLOW as i32,
+                                    0,
+                                ),
+                                Err(SyscallError { error: Errno::NOENT, .. })
+                            ) {
+                                //TODO: and relax this one
+                                Err(PostCloneGuestOtherError::DestinationExists)?;
+                            }
 
-                    rustix::fs::mkdirat(
-                        &parent_fd,
-                        file_name.as_bytes(),
-                        *permissions,
+                            syscalls::mkdirat(
+                                &parent_fd,
+                                file_name,
+                                permissions.bits()
+                            )
+                            ?;
+
+                            Ok(())
+                        }
                     )?;
                 }
             }
         }
 
-        let guest_root_mount_attr = linux_general::mount_attr {
-            attr_set: (linux_general::MOUNT_ATTR_RDONLY
-                | linux_general::MOUNT_ATTR_NOSUID
-                | linux_general::MOUNT_ATTR_NODEV
-                | linux_general::MOUNT_ATTR_NOEXEC
-                | linux_general::MOUNT_ATTR_NOSYMFOLLOW)
+        let guest_root_mount_attr = linux::mount_attr {
+            attr_set: (linux::MOUNT_ATTR_RDONLY
+                | linux::MOUNT_ATTR_NOSUID
+                | linux::MOUNT_ATTR_NODEV
+                | linux::MOUNT_ATTR_NOEXEC
+                | linux::MOUNT_ATTR_NOSYMFOLLOW)
                 .into(),
             attr_clr: 0,
             propagation: 0,
             userns_fd: 0,
         };
 
-        //SAFETY: the arguments are as expected (TODO: make better)
-        if unsafe {
-            libc::syscall(
-                linux_general::__NR_mount_setattr.into(),
-                guest_root_fd.as_raw_fd(),
-                c"".as_ptr(),
-                linux_general::AT_EMPTY_PATH,
-                &guest_root_mount_attr,
-                size_of::<linux_general::mount_attr>(),
-            )
-        } != 0
-        {
-            Err::<(), _>(io::Error::last_os_error())?;
-        }
-
-        rustix::process::fchdir(&guest_root_fd)?;
-
-        rustix::mount::move_mount(
-            guest_root_fd,
-            "",
-            CWD,
-            "/",
-            MoveMountFlags::MOVE_MOUNT_F_EMPTY_PATH
-                | MoveMountFlags::MOVE_MOUNT_BENEATH,
+        syscalls::mount_setattr(
+            &guest_root_fd,
+            c"",
+            linux::AT_EMPTY_PATH,
+            guest_root_mount_attr,
         )?;
 
-        rustix::process::chroot(".")?;
-        rustix::mount::unmount(".", UnmountFlags::DETACH)?;
-        rustix::process::chdir("/")?;
+        syscalls::fchdir(&guest_root_fd)?;
+
+        syscalls::move_mount(
+            guest_root_fd,
+            c"",
+            Cwd,
+            c"/",
+            linux::MOVE_MOUNT_F_EMPTY_PATH | linux::MOVE_MOUNT_BENEATH,
+        )?;
+
+        syscalls::chroot(c".")?;
+        syscalls::umount2(c".", linux::MNT_DETACH as i32)?;
+        syscalls::chdir(c"/")?;
 
         if let Namespace::Unshared(ref uts) = self.namespaces.uts {
             if let Some(ref hostname) = uts.hostname {
-                rustix::system::sethostname(hostname.as_slice())?;
+                syscalls::sethostname(hostname)?;
             }
 
             if let Some(ref domain) = uts.domain {
-                rustix::system::setdomainname(domain.as_slice())?;
+                syscalls::setdomainname(domain)?;
             }
         }
 
@@ -870,34 +850,23 @@ where
             netlink::setup_loopback()?;
         }
 
-        let _ = rustix::process::umask(old_umask);
+        let _ = syscalls::umask(old_umask);
 
         if self.new_session {
-            let _ = rustix::process::setsid()?;
+            let _ = syscalls::setsid()?;
         }
 
         if self.namespaces.user.disable_userns {
-            let max_user_ns_fd = util::retry_on_interrupt!({
-                rustix::fs::openat2(
-                    &guest_proc_fd,
-                    "sys/user/max_user_namespaces",
-                    OFlags::WRONLY | OFlags::CLOEXEC,
-                    Mode::empty(),
-                    ResolveFlags::BENEATH,
-                )
-            })?;
-
-            util::check_if_incomplete(
-                util::retry_on_interrupt!({
-                    rustix::io::write(&max_user_ns_fd, b"1\n")
-                })?,
-                2,
-            )?;
+            util::open_beneath_and_write!(
+                &guest_proc_fd,
+                c"sys/user/max_user_namespaces",
+                b"1\n"
+            );
 
             //SAFETY: we're not unsharing the file descriptor namespace so
             //        no fds are invalidated
             unsafe {
-                rustix::thread::unshare_unsafe(UnshareFlags::NEWUSER)?;
+                syscalls::unshare(linux::CLONE_NEWUSER as ffi::c_int)?;
             }
 
             util::drop_bounding_set(self.target_capabilities)?;
@@ -912,14 +881,11 @@ where
             )?;
         }
 
-        rustix::thread::set_capabilities(
-            None,
-            CapabilitySets {
-                effective: CapabilitySet::empty(),
-                permitted: self.target_capabilities,
-                inheritable: self.target_capabilities,
-            },
-        )?;
+        syscalls::set_capabilities(CapabilitySets {
+            effective: CapabilitySet::empty(),
+            permitted: self.target_capabilities,
+            inheritable: self.target_capabilities,
+        })?;
 
         child_callback()
     }
@@ -965,11 +931,11 @@ where
 /// - cgroup namespaces are always used because they don't do much other than
 ///   change the view of cgroups that the sandbox gets.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Namespaces {
+pub struct Namespaces<'a> {
     ipc: Namespace<IpcOptions>,
     pid: Namespace<PidOptions>,
     network: Namespace<NetworkOptions>,
-    uts: Namespace<UtsOptions>,
+    uts: Namespace<UtsOptions<'a>>,
     time: Namespace<TimeOptions>,
     user: UserOptions,
 }
@@ -998,7 +964,7 @@ pub enum NetworkOptions {
 
 /// UTS namespace policy.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UtsOptions {
+pub struct UtsOptions<'a> {
     /// Hostname to set with `sethostname(2)`.
     ///
     /// # Notes
@@ -1007,7 +973,7 @@ pub struct UtsOptions {
     /// applications may have expectations of this field. At a minimum, treat
     /// this field as if it were only containing alphanumerical characters as
     /// well as not starting with a period or a hyphen.
-    hostname: Option<Vec<u8>>,
+    hostname: Option<&'a [u8]>,
 
     /// Domain name to set with `setdomainname(2)`.
     ///
@@ -1019,7 +985,7 @@ pub struct UtsOptions {
     /// applications may have expectations of this field. At a minimum, treat
     /// this field as if it were only containing alphanumerical characters as
     /// well as not starting with a hyphen.
-    domain: Option<Vec<u8>>,
+    domain: Option<&'a [u8]>,
 }
 
 /// Time namespace policy.
@@ -1062,9 +1028,9 @@ mod test {
     use super::super::{
         cgroups::{
             CgroupController, PidsController, Policy as CgroupsPolicy,
-            Resource, SystemdState,
+            Resource, /* SystemdState, */
         },
-        mapping::{ProcHidepid, ProcSubset},
+        mapping::{Mode, ProcHidepid, ProcSubset},
         path::{HostDirectory, HostFile},
     };
 
@@ -1098,14 +1064,14 @@ mod test {
 
         let policy = Policy {
             mappings,
-            seccomp: None,
+            /* seccomp: None, */
             namespaces: Namespaces {
                 ipc: Namespace::Unshared(IpcOptions),
                 pid: Namespace::Unshared(PidOptions),
                 network: Namespace::Unshared(NetworkOptions::Isolate),
                 uts: Namespace::Unshared(UtsOptions {
-                    hostname: None,
-                    domain: None,
+                    hostname: Some(b"host"),
+                    domain: Some(b"domain"),
                 }),
                 time: Namespace::Unshared(TimeOptions {
                     monotonic_offset: Some(TimeOffset {
@@ -1120,7 +1086,7 @@ mod test {
                     disable_userns: false,
                 },
             },
-            cgroups: Cgroups::new_systemd(CgroupsPolicy {
+            cgroups: Cgroups::new_null(CgroupsPolicy {
                 cgroup: CgroupController {
                     is_threaded: false,
                     enable_psi_accounting: false,
@@ -1160,21 +1126,18 @@ mod test {
                                 .as_slice()
                                 .as_ptr(),
                         );
-                        panic!("{} failed", io::Error::last_os_error());
+                        panic!("{} failed", syscalls::last_errno());
                     },
-                    SystemdState::new().expect("idc"),
+                    (),
+                    /* SystemdState::new().expect("idc"), */
                 )
                 .expect("unable to start a sandboxed process")
         };
 
-        println!(
-            "{:?}",
-            rustix::process::waitid(
-                WaitId::PidFd(fd.as_fd()),
-                WaitIdOptions::EXITED,
-            )
-            .expect("unable to wait on the sandboxed process")
-        );
+        //FIXME: when [`WaitIdStatus`] has a debug impl
+        let _ =
+            syscalls::waitid(WaitFor::PidFd(fd.as_fd()), linux::WEXITED as i32)
+                .expect("unable to wait on the sandboxed process");
 
         policy.cgroups.teardown(cgroups_state).expect(
             "unable to teardown the cgroups policy of the sandboxed process",

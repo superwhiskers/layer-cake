@@ -11,21 +11,16 @@
 //TODO: consider treating `EEXIST` as success (remove `NLM_F_EXCL` flag from
 //      the address setup)
 
-use linux_raw_sys::{net as linux_net, netlink};
-use rustix::{
-    fd::AsFd,
-    net::{
-        AddressFamily, RecvFlags, SendFlags, SocketFlags, SocketType,
-        netlink::SocketAddrNetlink,
+use linux_raw_sys::{general as linux, net as linux_net, netlink};
+use std::{ffi, os::fd::AsFd, ptr};
+
+use super::{
+    errors::{
+        Netlink as NetlinkError, PostCloneGuest as PostCloneGuestError,
+        PostCloneGuestOther as PostCloneGuestOtherError,
     },
+    syscalls, util,
 };
-use std::{ffi, ptr};
-
-use super::util;
-use crate::errors::ChildError;
-
-/// Netlink address of the kernel.
-const KERNEL_NETLINK_ADDRESS: SocketAddrNetlink = SocketAddrNetlink::new(0, 0);
 
 /// Writes an arbitrary value `T` to the buffer, incrementing `offset` by the
 /// number of bytes written.
@@ -37,7 +32,7 @@ fn write<T>(
     buffer: &mut [u8],
     offset: &mut usize,
     value: T,
-) -> Result<(), ChildError>
+) -> Result<(), PostCloneGuestError>
 where
     T: Copy,
 {
@@ -47,7 +42,7 @@ where
         .checked_add(size)
         .is_none_or(|sum| sum > buffer.len())
     {
-        return Err(ChildError::BufferTooSmall);
+        return Err(PostCloneGuestOtherError::BufferTooSmall.into());
     }
 
     //SAFETY: this is in the bounds of the allocation, as checked above
@@ -74,13 +69,13 @@ fn write_bytes(
     buffer: &mut [u8],
     offset: &mut usize,
     bytes: &[u8],
-) -> Result<(), ChildError> {
+) -> Result<(), PostCloneGuestError> {
     let end = offset
         .checked_add(bytes.len())
-        .ok_or(ChildError::BufferTooSmall)?;
+        .ok_or(PostCloneGuestOtherError::BufferTooSmall)?;
     let destination = buffer
         .get_mut(*offset..end)
-        .ok_or(ChildError::BufferTooSmall)?;
+        .ok_or(PostCloneGuestOtherError::BufferTooSmall)?;
     destination.copy_from_slice(bytes);
     *offset = end;
     Ok(())
@@ -97,7 +92,7 @@ fn write_attribute(
     offset: &mut usize,
     ty: u16,
     payload: &[u8],
-) -> Result<(), ChildError> {
+) -> Result<(), PostCloneGuestError> {
     let length = size_of::<netlink::rtattr>() + payload.len();
 
     write(
@@ -113,10 +108,10 @@ fn write_attribute(
     //NOTE: align the offset to a 4-byte boundary
     *offset = offset
         .checked_next_multiple_of(4)
-        .ok_or(ChildError::IntegerOverflow)?;
+        .ok_or(PostCloneGuestOtherError::IntegerOverflow)?;
 
     if *offset > buffer.len() {
-        return Err(ChildError::BufferTooSmall);
+        return Err(PostCloneGuestOtherError::BufferTooSmall.into());
     }
 
     Ok(())
@@ -135,7 +130,7 @@ fn finish_netlink_message<'a>(
     ty: u16,
     flags: u16,
     sequence: &mut u32,
-) -> Result<(u32, &'a [u8]), ChildError> {
+) -> Result<(u32, &'a [u8]), PostCloneGuestError> {
     let mut offset = 0;
 
     write(
@@ -151,11 +146,15 @@ fn finish_netlink_message<'a>(
     )?;
 
     let old_sequence = *sequence;
-    *sequence = sequence.checked_add(1).ok_or(ChildError::IntegerOverflow)?;
+    *sequence = sequence
+        .checked_add(1)
+        .ok_or(PostCloneGuestOtherError::IntegerOverflow)?;
 
     Ok((
         old_sequence,
-        buffer.get(..length).ok_or(ChildError::BufferTooSmall)?,
+        buffer
+            .get(..length)
+            .ok_or(PostCloneGuestOtherError::BufferTooSmall)?,
     ))
 }
 
@@ -165,15 +164,13 @@ fn finish_netlink_message<'a>(
 ///
 /// This function errors if `sendto(2)` fails or the number of bytes written
 /// does not match the size of the message.
-fn send_message(socket: impl AsFd, message: &[u8]) -> Result<(), ChildError> {
+fn send_message(
+    socket: impl AsFd,
+    message: &[u8],
+) -> Result<(), PostCloneGuestError> {
     util::check_if_incomplete(
         util::retry_on_interrupt!({
-            rustix::net::sendto(
-                socket.as_fd(),
-                message,
-                SendFlags::empty(),
-                &KERNEL_NETLINK_ADDRESS,
-            )
+            syscalls::sendto_nl_kernel(&socket, message, 0)
         })?,
         message.len(),
     )?;
@@ -187,12 +184,15 @@ fn send_message(socket: impl AsFd, message: &[u8]) -> Result<(), ChildError> {
 ///
 /// This function fails if reading from the provided socket fails, if a message
 /// received is malformed or unexpected, or if an error was returned.
-fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), ChildError> {
+fn check_for_ack(
+    socket: impl AsFd,
+    sequence: u32,
+) -> Result<(), PostCloneGuestError> {
     let mut buffer = [0; 1024];
 
     loop {
-        let (_, n_read) = util::retry_on_interrupt!({
-            rustix::net::recv(socket.as_fd(), &mut buffer, RecvFlags::empty())
+        let n_read = util::retry_on_interrupt!({
+            syscalls::recvfrom(&socket, &mut buffer, 0)
         })?;
 
         let mut offset = 0;
@@ -207,16 +207,16 @@ fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), ChildError> {
             let message_length = header.nlmsg_len as usize;
 
             if message_length < size_of::<netlink::nlmsghdr>() {
-                return Err(ChildError::NetlinkMalformedHeader);
+                return Err(NetlinkError::MalformedHeader.into());
             }
 
             if offset + message_length > n_read {
-                return Err(ChildError::NetlinkTruncatedMessage);
+                return Err(NetlinkError::TruncatedMessage.into());
             }
 
             if header.nlmsg_seq != sequence {
                 //NOTE: we don't anticipate sharing this link
-                return Err(ChildError::NetlinkSequenceMismatch);
+                return Err(NetlinkError::SequenceMismatch.into());
             }
 
             match header.nlmsg_type as u32 {
@@ -225,7 +225,7 @@ fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), ChildError> {
                         + size_of::<netlink::nlmsgerr>()
                         > message_length
                     {
-                        return Err(ChildError::NetlinkIncorrectSize);
+                        return Err(NetlinkError::IncorrectSize.into());
                     }
 
                     //SAFETY: we just checked that the message data fits within
@@ -243,7 +243,10 @@ fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), ChildError> {
                         return Ok(());
                     }
 
-                    return Err(ChildError::NetlinkError(error.error));
+                    return Err(NetlinkError::Errno(
+                        syscalls::Errno::from_raw_os_error(-error.error),
+                    )
+                    .into());
                 }
                 netlink::NLMSG_DONE => {
                     return Ok(());
@@ -253,10 +256,10 @@ fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), ChildError> {
 
             let aligned_length = message_length
                 .checked_next_multiple_of(4)
-                .ok_or(ChildError::IntegerOverflow)?;
+                .ok_or(PostCloneGuestOtherError::IntegerOverflow)?;
             offset = offset
                 .checked_add(aligned_length)
-                .ok_or(ChildError::IntegerOverflow)?;
+                .ok_or(PostCloneGuestOtherError::IntegerOverflow)?;
         }
     }
 }
@@ -270,7 +273,7 @@ fn write_add_loopback_address<'a>(
     buffer: &'a mut [u8],
     loopback_interface_index: ffi::c_uint,
     sequence: &mut u32,
-) -> Result<(u32, &'a [u8]), ChildError> {
+) -> Result<(u32, &'a [u8]), PostCloneGuestError> {
     let mut offset = size_of::<netlink::nlmsghdr>();
 
     write(
@@ -319,7 +322,7 @@ fn write_bring_up_loopback_device<'a>(
     buffer: &'a mut [u8],
     loopback_interface_index: ffi::c_uint,
     sequence: &mut u32,
-) -> Result<(u32, &'a [u8]), ChildError> {
+) -> Result<(u32, &'a [u8]), PostCloneGuestError> {
     let mut offset = size_of::<netlink::nlmsghdr>();
 
     write(
@@ -350,25 +353,23 @@ fn write_bring_up_loopback_device<'a>(
 ///
 /// This returns an error if opening a netlink socket, or setting up the
 /// loopback interface fails.
-pub fn setup_loopback() -> Result<(), ChildError> {
+pub fn setup_loopback() -> Result<(), PostCloneGuestError> {
     let mut buffer = [0; 1024];
     let mut sequence = 0;
 
     let loopback_interface_index = {
-        let temporary_socket = rustix::net::socket_with(
-            AddressFamily::INET,
-            SocketType::DGRAM,
-            SocketFlags::CLOEXEC,
-            None,
+        let temporary_socket = syscalls::socket(
+            linux_net::AF_INET as i32,
+            (linux_net::SOCK_DGRAM | linux::O_CLOEXEC) as i32,
+            0,
         )?;
-        rustix::net::netdevice::name_to_index(&temporary_socket, "lo")?
+        syscalls::interface_name_to_index(&temporary_socket, c"lo")?
     };
 
-    let rtnetlink_socket = rustix::net::socket_with(
-        AddressFamily::NETLINK,
-        SocketType::RAW,
-        SocketFlags::CLOEXEC,
-        None,
+    let rtnetlink_socket = syscalls::socket(
+        linux_net::AF_NETLINK as i32,
+        (linux_net::SOCK_DGRAM | linux::O_CLOEXEC) as i32,
+        0,
     )?;
 
     let (message_sequence, message) = write_add_loopback_address(
