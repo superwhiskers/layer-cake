@@ -1,0 +1,26 @@
+[package]
+name = "meowix"
+description = "Direct syscall wrappers and associated types for Linux"
+version = "0.0.0"
+authors = ["superwhiskers <whiskerdev@protonmail.com>"]
+repository = "https://git.errno.systems/layer-cake"
+# TODO: should get a readme
+readme = "../../readme.md"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+# TODO: remove once a per-platform syscall implementation exists
+libc.workspace = true
+linux-raw-sys.workspace = true
+bytemuck.workspace = true
+bitflags.workspace = true
+
+[features]
+default = []
+
+# Adds support for the `alloc` crate.
+alloc = []
+
+[lints]
+workspace = true

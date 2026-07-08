@@ -11,15 +11,12 @@
 //TODO: consider treating `EEXIST` as success (remove `NLM_F_EXCL` flag from
 //      the address setup)
 
+use core::{ffi, ptr};
 use linux_raw_sys::{general as linux, net as linux_net, netlink};
-use std::{ffi, os::fd::AsFd, ptr};
 
-use super::{
-    errors::{
-        Netlink as NetlinkError, PostCloneGuest as PostCloneGuestError,
-        PostCloneGuestOther as PostCloneGuestOtherError,
-    },
-    syscalls, util,
+use crate::{
+    errno::Errno, errors::Netlink as NetlinkError, fd::AsFd,
+    retry_on_interrupt, syscalls, util::check_if_incomplete,
 };
 
 /// Writes an arbitrary value `T` to the buffer, incrementing `offset` by the
@@ -32,7 +29,7 @@ fn write<T>(
     buffer: &mut [u8],
     offset: &mut usize,
     value: T,
-) -> Result<(), PostCloneGuestError>
+) -> Result<(), NetlinkError>
 where
     T: Copy,
 {
@@ -42,7 +39,7 @@ where
         .checked_add(size)
         .is_none_or(|sum| sum > buffer.len())
     {
-        return Err(PostCloneGuestOtherError::BufferTooSmall.into());
+        return Err(NetlinkError::BufferTooSmall.into());
     }
 
     //SAFETY: this is in the bounds of the allocation, as checked above
@@ -69,13 +66,13 @@ fn write_bytes(
     buffer: &mut [u8],
     offset: &mut usize,
     bytes: &[u8],
-) -> Result<(), PostCloneGuestError> {
+) -> Result<(), NetlinkError> {
     let end = offset
         .checked_add(bytes.len())
-        .ok_or(PostCloneGuestOtherError::BufferTooSmall)?;
+        .ok_or(NetlinkError::BufferTooSmall)?;
     let destination = buffer
         .get_mut(*offset..end)
-        .ok_or(PostCloneGuestOtherError::BufferTooSmall)?;
+        .ok_or(NetlinkError::BufferTooSmall)?;
     destination.copy_from_slice(bytes);
     *offset = end;
     Ok(())
@@ -92,7 +89,7 @@ fn write_attribute(
     offset: &mut usize,
     ty: u16,
     payload: &[u8],
-) -> Result<(), PostCloneGuestError> {
+) -> Result<(), NetlinkError> {
     let length = size_of::<netlink::rtattr>() + payload.len();
 
     write(
@@ -108,10 +105,10 @@ fn write_attribute(
     //NOTE: align the offset to a 4-byte boundary
     *offset = offset
         .checked_next_multiple_of(4)
-        .ok_or(PostCloneGuestOtherError::IntegerOverflow)?;
+        .ok_or(NetlinkError::IntegerOverflow)?;
 
     if *offset > buffer.len() {
-        return Err(PostCloneGuestOtherError::BufferTooSmall.into());
+        return Err(NetlinkError::BufferTooSmall.into());
     }
 
     Ok(())
@@ -130,7 +127,7 @@ fn finish_netlink_message<'a>(
     ty: u16,
     flags: u16,
     sequence: &mut u32,
-) -> Result<(u32, &'a [u8]), PostCloneGuestError> {
+) -> Result<(u32, &'a [u8]), NetlinkError> {
     let mut offset = 0;
 
     write(
@@ -148,13 +145,11 @@ fn finish_netlink_message<'a>(
     let old_sequence = *sequence;
     *sequence = sequence
         .checked_add(1)
-        .ok_or(PostCloneGuestOtherError::IntegerOverflow)?;
+        .ok_or(NetlinkError::IntegerOverflow)?;
 
     Ok((
         old_sequence,
-        buffer
-            .get(..length)
-            .ok_or(PostCloneGuestOtherError::BufferTooSmall)?,
+        buffer.get(..length).ok_or(NetlinkError::BufferTooSmall)?,
     ))
 }
 
@@ -164,12 +159,9 @@ fn finish_netlink_message<'a>(
 ///
 /// This function errors if `sendto(2)` fails or the number of bytes written
 /// does not match the size of the message.
-fn send_message(
-    socket: impl AsFd,
-    message: &[u8],
-) -> Result<(), PostCloneGuestError> {
-    util::check_if_incomplete(
-        util::retry_on_interrupt!({
+fn send_message(socket: impl AsFd, message: &[u8]) -> Result<(), NetlinkError> {
+    check_if_incomplete(
+        retry_on_interrupt!({
             syscalls::sendto_nl_kernel(&socket, message, 0)
         })?,
         message.len(),
@@ -184,14 +176,11 @@ fn send_message(
 ///
 /// This function fails if reading from the provided socket fails, if a message
 /// received is malformed or unexpected, or if an error was returned.
-fn check_for_ack(
-    socket: impl AsFd,
-    sequence: u32,
-) -> Result<(), PostCloneGuestError> {
+fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), NetlinkError> {
     let mut buffer = [0; 1024];
 
     loop {
-        let n_read = util::retry_on_interrupt!({
+        let n_read = retry_on_interrupt!({
             syscalls::recvfrom(&socket, &mut buffer, 0)
         })?;
 
@@ -243,9 +232,9 @@ fn check_for_ack(
                         return Ok(());
                     }
 
-                    return Err(NetlinkError::Errno(
-                        syscalls::Errno::from_raw_os_error(-error.error),
-                    )
+                    return Err(NetlinkError::Errno(Errno::from_raw_os_error(
+                        -error.error,
+                    ))
                     .into());
                 }
                 netlink::NLMSG_DONE => {
@@ -256,10 +245,10 @@ fn check_for_ack(
 
             let aligned_length = message_length
                 .checked_next_multiple_of(4)
-                .ok_or(PostCloneGuestOtherError::IntegerOverflow)?;
+                .ok_or(NetlinkError::IntegerOverflow)?;
             offset = offset
                 .checked_add(aligned_length)
-                .ok_or(PostCloneGuestOtherError::IntegerOverflow)?;
+                .ok_or(NetlinkError::IntegerOverflow)?;
         }
     }
 }
@@ -273,7 +262,7 @@ fn write_add_loopback_address<'a>(
     buffer: &'a mut [u8],
     loopback_interface_index: ffi::c_uint,
     sequence: &mut u32,
-) -> Result<(u32, &'a [u8]), PostCloneGuestError> {
+) -> Result<(u32, &'a [u8]), NetlinkError> {
     let mut offset = size_of::<netlink::nlmsghdr>();
 
     write(
@@ -322,7 +311,7 @@ fn write_bring_up_loopback_device<'a>(
     buffer: &'a mut [u8],
     loopback_interface_index: ffi::c_uint,
     sequence: &mut u32,
-) -> Result<(u32, &'a [u8]), PostCloneGuestError> {
+) -> Result<(u32, &'a [u8]), NetlinkError> {
     let mut offset = size_of::<netlink::nlmsghdr>();
 
     write(
@@ -353,7 +342,7 @@ fn write_bring_up_loopback_device<'a>(
 ///
 /// This returns an error if opening a netlink socket, or setting up the
 /// loopback interface fails.
-pub fn setup_loopback() -> Result<(), PostCloneGuestError> {
+pub fn setup_loopback() -> Result<(), NetlinkError> {
     let mut buffer = [0; 1024];
     let mut sequence = 0;
 

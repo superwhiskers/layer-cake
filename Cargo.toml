@@ -21,7 +21,8 @@ bitflags = "2"
 
 [workspace.dependencies.bytemuck]
 version = "1"
-features = ["derive"]
+default-features = false
+features = ["derive", "must_cast"]
 
 [workspace.dependencies.uuid]
 version = "1"
@@ -53,6 +54,10 @@ default-features = false
 
 [workspace.dependencies.bubblebox]
 path = "crates/bubblebox"
+
+[workspace.dependencies.meowix]
+path = "crates/meowix"
+features = ["alloc"]
 
 [workspace.dependencies.layer-cake-core]
 path = "crates/core"

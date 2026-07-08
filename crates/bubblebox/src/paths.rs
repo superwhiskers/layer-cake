@@ -2,12 +2,13 @@
 
 //! Sandbox path abstraction.
 
-//TODO: add `TryInto<PathBuf>`? --- odd form, but we cannot implement
-//      `TryFrom` on `PathBuf`
+//TODO: add a reference type for this, like we have in the linux backend. then
+//      edit everything else to take it
+//TODO: impl borrow for this?
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
-use crate::errors::{Error, GuestPath as GuestPathError};
+use crate::{errors::Error, platform::paths::GuestInner};
 
 /// Path residing within the sandbox.
 ///
@@ -17,7 +18,9 @@ use crate::errors::{Error, GuestPath as GuestPathError};
 /// characters invalid for a path on the host system. Guest paths must not
 /// contain a Windows path prefix.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Guest(PathBuf);
+pub struct Guest {
+    pub(crate) inner: GuestInner,
+}
 
 impl Guest {
     /// Constructs a new guest path from the given [`Path`].
@@ -31,32 +34,14 @@ impl Guest {
     ///
     /// This method errors if the provided path fails the validation step.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let path = path.as_ref();
+        Ok(Self {
+            inner: GuestInner::new(path)?,
+        })
+    }
 
-        if !path.is_absolute() {
-            return Err(GuestPathError::PathNotAbsolute.into());
-        }
-
-        let mut normalized = PathBuf::from("/");
-
-        for component in path.components() {
-            match component {
-                //NOTE: the former is expected and the latter is normalized
-                //      away or excluded by checking that the path is not
-                //      relative earlier
-                Component::RootDir | Component::CurDir => {}
-
-                Component::Normal(c) => normalized.push(c),
-                Component::ParentDir => {
-                    return Err(GuestPathError::PathContainsParent.into());
-                }
-                Component::Prefix(_) => {
-                    return Err(GuestPathError::GuestPathHasPrefix.into());
-                }
-            }
-        }
-
-        Ok(Self(normalized))
+    /// Indicates if the path starts with the specified path.
+    pub fn starts_with(&self, other: &Self) -> bool {
+        self.inner.starts_with(&other.inner)
     }
 }
 
@@ -81,11 +66,5 @@ impl TryFrom<&str> for Guest {
 
     fn try_from(path: &str) -> Result<Self, Self::Error> {
         Self::new(PathBuf::from(path))
-    }
-}
-
-impl AsRef<Path> for Guest {
-    fn as_ref(&self) -> &Path {
-        self.0.as_path()
     }
 }

@@ -1,7 +1,8 @@
-gui/build/
-gui/.fenv/
-gui/.flatpak-builder/
-gui/src/config.rs
-gui/out/
+crates/gtk4/build/
+crates/gtk4/.fenv/
+crates/gtk4/.flatpak-builder/
+crates/gtk4/src/config.rs
+crates/gtk4/out/
 target/
+result/
 .direnv/

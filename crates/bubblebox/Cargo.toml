@@ -10,11 +10,10 @@ edition = "2024"
 license = "AGPL-3.0-only"
 
 [dependencies]
-libc.workspace = true
 linux-raw-sys.workspace = true
 itoa.workspace = true
 bytemuck.workspace = true
-bitflags.workspace = true
+meowix.workspace = true
 
 [dependencies.seccompiler]
 workspace = true

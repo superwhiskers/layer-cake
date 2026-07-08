@@ -60,15 +60,16 @@
         { pkgs, ... }: {
           linuxHeaders = pkgs.linuxHeaders.overrideAttrs (
             final: _: {
-              version = "7.1.2";
+              version = "7.1.3";
               src = pkgs.fetchurl {
                 url = "mirror://kernel/linux/kernel/v${pkgs.lib.versions.major final.version}.x/linux-${final.version}.tar.xz";
-                hash = "sha256-NxmMk3J74kfJ+1MJu4bNXklsYeUyLNjE7KlHa7C1iD8=";
+                hash = "sha256-vkHAaOiPUkKhm8zb/74HexjEe0X2J+IyVQS0+red0dw=";
               };
               patches = [ ];
             }
           );
         }
       );
+
     };
 }

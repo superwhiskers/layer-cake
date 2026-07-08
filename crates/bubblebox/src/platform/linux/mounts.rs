@@ -1,107 +1,45 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Sandbox mapping realization.
+//! Sandbox mount realization.
 
-//NOTE: should take a look at bwrap once more to see what it exposes by
+//TODO: should take a look at bwrap once more to see what it exposes by
 //      default from /dev. relevant for elsewhere in the linux platform module
 //TODO: write a function that inspects an elf binary and derives mappings for
 //      shared libraries it relies upon in addition to itself
 //TODO: `*_with_owner` methods are disabled until systemd-nsresourced or
 //      newuidmap/newgidmap are supported
+//TODO: provide a way to take in arbitrary detached mounts as mappings
+//TODO: add selinux support through file label options for mounts, executable
+//      labels for the program
 
 use linux_raw_sys::general as linux;
-use std::{
-    ffi::{self, OsStr},
-    os::fd::BorrowedFd,
-};
+use meowix::{fd::BorrowedFd, ids::Gid, mode::Mode};
+use std::ffi::CStr;
 
-use super::{
-    path::{HostDirectoryRef, HostFileRef},
-    syscalls::Gid,
-};
+use super::paths::{HostDirectoryRef, HostFileRef};
 
-//FIXME: i don't think this belongs here but i'll leave it here for now
-bitflags::bitflags! {
-    /// Linux `mode_t` constants.
-    #[repr(transparent)]
-    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-    pub struct Mode: ffi::c_uint {
-        /// Read, write and execute permissions for the owning user.
-        const RWXU = linux::S_IRWXU;
-
-        /// Read permissions for the owning user.
-        const RUSR = linux::S_IRUSR;
-
-        /// Write permissions for the owning user.
-        const WUSR = linux::S_IWUSR;
-
-        /// Execute permissions for the owning user.
-        const XUSR = linux::S_IXUSR;
-
-        /// Read, write, and execute permissions for the owning group.
-        const RWXG = linux::S_IRWXG;
-
-        /// Read permissions for the owning group.
-        const RGRP = linux::S_IRGRP;
-
-        /// Write permissions for the owning group.
-        const WGRP = linux::S_IWGRP;
-
-        /// Execute permissions for the owning group.
-        const XGRP = linux::S_IXGRP;
-
-        /// Read, write, and execute permissions for other users.
-        const RWXO = linux::S_IRWXO;
-
-        /// Read permissions for other users.
-        const ROTH = linux::S_IROTH;
-
-        /// Write permissions for other users.
-        const WOTH = linux::S_IWOTH;
-
-        /// Execute permissions for other users.
-        const XOTH = linux::S_IXOTH;
-
-        /// Change the effective user id of the calling process to the owner of
-        /// the file on execute.
-        const SUID = linux::S_ISUID;
-
-        /// Change the effective group id of the calling process to the owner
-        /// of the file on execute.
-        const SGID = linux::S_ISGID;
-
-        /// Files inside a directory with this bit set can be renamed or
-        /// deleted only by the owner of the file, the owner of the directory,
-        /// or by a privileged process.
-        const SVTX = linux::S_ISVTX;
-
-        //NOTE: unlikely that anyone needs this but here it is
-        const _ = !0;
-    }
-}
-
-/// Source of a mapping.
+/// Source of a mount.
 #[derive(Clone, Debug)]
-pub struct Source<'fd> {
-    /// The mapping's source.
-    pub(crate) inner: SourceInner<'fd>,
+pub struct Mount<'fd> {
+    /// The mount's source.
+    pub(crate) inner: MountInner<'fd>,
 }
 
-impl<'fd> Source<'fd> {
+impl<'fd> Mount<'fd> {
     #![expect(
         clippy::missing_const_for_fn,
         reason = "constructors taking BorrowedFd, Uid, or Gid are intentionally non-const"
     )]
 
     /// Create a new source from the given inner value.
-    const fn new(inner: SourceInner<'fd>) -> Self {
+    const fn new(inner: MountInner<'fd>) -> Self {
         Self { inner }
     }
 
     /// Indicates if the source is synthetic or not.
     pub const fn is_synthetic(&self) -> bool {
         let Self { inner } = self;
-        !matches!(inner, SourceInner::Bind(_))
+        !matches!(inner, MountInner::Bind(_))
     }
 
     /// Read-only mapping of a file from the host to the guest, preserving
@@ -109,7 +47,7 @@ impl<'fd> Source<'fd> {
     #[must_use]
     pub fn read_only_file(fd: HostFileRef<'fd>) -> Self {
         let (dirfd, name, fd) = fd.into_parts();
-        Self::new(SourceInner::Bind(BindMount::File {
+        Self::new(MountInner::Bind(BindMount::File {
             dirfd,
             name,
             fd,
@@ -128,7 +66,7 @@ impl<'fd> Source<'fd> {
     #[must_use]
     pub fn read_write_file(fd: HostFileRef<'fd>) -> Self {
         let (dirfd, name, fd) = fd.into_parts();
-        Self::new(SourceInner::Bind(BindMount::File {
+        Self::new(MountInner::Bind(BindMount::File {
             dirfd,
             name,
             fd,
@@ -147,7 +85,7 @@ impl<'fd> Source<'fd> {
     #[must_use]
     pub fn device_file(fd: HostFileRef<'fd>) -> Self {
         let (dirfd, name, fd) = fd.into_parts();
-        Self::new(SourceInner::Bind(BindMount::File {
+        Self::new(MountInner::Bind(BindMount::File {
             dirfd,
             name,
             fd,
@@ -169,7 +107,7 @@ impl<'fd> Source<'fd> {
         attributes: MountAttributes,
     ) -> Self {
         let (dirfd, name, fd) = fd.into_parts();
-        Self::new(SourceInner::Bind(BindMount::File {
+        Self::new(MountInner::Bind(BindMount::File {
             dirfd,
             name,
             fd,
@@ -181,7 +119,7 @@ impl<'fd> Source<'fd> {
     /// ownership and permissions.
     #[must_use]
     pub fn read_only_directory(fd: HostDirectoryRef<'fd>) -> Self {
-        Self::new(SourceInner::Bind(BindMount::Directory {
+        Self::new(MountInner::Bind(BindMount::Directory {
             fd: fd.into_fd(),
             attributes: MountAttributes {
                 read_only: true,
@@ -198,7 +136,7 @@ impl<'fd> Source<'fd> {
     /// ownership and permissions.
     #[must_use]
     pub fn read_write_directory(fd: HostDirectoryRef<'fd>) -> Self {
-        Self::new(SourceInner::Bind(BindMount::Directory {
+        Self::new(MountInner::Bind(BindMount::Directory {
             fd: fd.into_fd(),
             attributes: MountAttributes {
                 read_only: false,
@@ -219,7 +157,7 @@ impl<'fd> Source<'fd> {
         attributes: MountAttributes,
         is_recursive: bool,
     ) -> Self {
-        Self::new(SourceInner::Bind(BindMount::Directory {
+        Self::new(MountInner::Bind(BindMount::Directory {
             fd: fd.into_fd(),
             attributes,
             is_recursive,
@@ -230,7 +168,7 @@ impl<'fd> Source<'fd> {
     /// namespace of the guest.
     #[must_use]
     pub const fn proc(hidepid: ProcHidepid, subset: ProcSubset) -> Self {
-        Self::new(SourceInner::Procfs {
+        Self::new(MountInner::Procfs {
             hidepid,
             gid: None,
             subset,
@@ -253,7 +191,7 @@ impl<'fd> Source<'fd> {
         subset: ProcSubset,
         namespace: BorrowedFd<'fd>,
     ) -> Self {
-        Self::new(SourceInner::Procfs {
+        Self::new(MountInner::Procfs {
             hidepid,
             gid: None,
             subset,
@@ -277,7 +215,7 @@ impl<'fd> Source<'fd> {
         gid: Gid,
         subset: ProcSubset,
     ) -> Self {
-        Self::new(SourceInner::Procfs {
+        Self::new(MountInner::Procfs {
             hidepid,
             gid: Some(gid),
             subset,
@@ -303,7 +241,7 @@ impl<'fd> Source<'fd> {
         subset: ProcSubset,
         namespace: BorrowedFd<'fd>,
     ) -> Self {
-        Self::new(SourceInner::Procfs {
+        Self::new(MountInner::Procfs {
             hidepid,
             gid: Some(gid),
             subset,
@@ -321,7 +259,7 @@ impl<'fd> Source<'fd> {
     /// Mapping of an mqueue filesystem to the given path on the guest.
     #[must_use]
     pub const fn mqueue() -> Self {
-        Self::new(SourceInner::Mqueue {
+        Self::new(MountInner::Mqueue {
             attributes: MountAttributes {
                 read_only: false,
                 no_setuid: true,
@@ -340,32 +278,12 @@ impl<'fd> Source<'fd> {
     /// This method is intended primarily for small synthetic files.
     #[must_use]
     pub fn file(contents: impl Into<Vec<u8>>, permissions: Mode) -> Self {
-        Self::new(SourceInner::File(File {
+        Self::new(MountInner::File(File {
             contents: contents.into(),
             owner: Owner::User,
             permissions,
         }))
     }
-
-    /*
-    /// Mapping of the contents of a file to a given path on the guest with
-    /// the specified owner.
-    ///
-    /// This method is intended primarily for small synthetic files.
-    #[must_use]
-    pub fn file_with_owner(
-        contents: impl Into<Vec<u8>>,
-        user: Uid,
-        group: Gid,
-        permissions: Mode,
-    ) -> Self {
-        Self::new(SourceInner::File(File {
-            contents: contents.into(),
-            owner: Owner::Ids { user, group },
-            permissions,
-        }))
-    }
-    */
 
     /// Mapping of an empty directory to a given path on the guest.
     ///
@@ -373,28 +291,11 @@ impl<'fd> Source<'fd> {
     /// specified in the policy for the sandboxed process.
     #[must_use]
     pub const fn directory(permissions: Mode) -> Self {
-        Self::new(SourceInner::EmptyDirectory {
+        Self::new(MountInner::EmptyDirectory {
             owner: Owner::User,
             permissions,
         })
     }
-
-    /*
-    /// Mapping of an empty directory to a given path on the guest with the
-    /// specified owner.
-    #[must_use]
-    pub fn directory_with_owner(
-        user: Uid,
-        group: Gid,
-        permissions: Mode,
-        destination: Guest,
-    ) -> Self {
-        Self::new(SourceInner::EmptyDirectory {
-            owner: Owner::Ids { user, group },
-            permissions,
-        })
-    }
-    */
 
     /// Mapping of a tmpfs mount to a given path on the guest.
     ///
@@ -406,7 +307,7 @@ impl<'fd> Source<'fd> {
         size: Option<String>,
         permissions: Mode,
     ) -> Self {
-        Self::new(SourceInner::Tmpfs {
+        Self::new(MountInner::Tmpfs {
             size,
             owner: Owner::User,
             permissions,
@@ -419,32 +320,14 @@ impl<'fd> Source<'fd> {
             },
         })
     }
-
-    /*
-    /// Mapping of a tmpfs mount to a given path on the guest with the
-    /// specified owner.
-    #[must_use]
-    pub fn tmpfs_with_owner(
-        size: Option<u64>,
-        user: Uid,
-        group: Gid,
-        permissions: Mode,
-    ) -> Self {
-        Self::new(SourceInner::Tmpfs {
-            size,
-            owner: Owner::Ids { user, group },
-            permissions,
-        })
-    }
-    */
 }
 
-/// Source of a mapping.
+/// Source of a mount.
 //TODO: maybe add a "don't create the destination" flag to bind mounts to
 //      give the user the option to make it themselves
 #[non_exhaustive]
 #[derive(Clone, Debug)]
-pub(crate) enum SourceInner<'fd> {
+pub(crate) enum MountInner<'fd> {
     /// A bind-mount sourced from the host.
     ///
     /// Preserves the permissions and ownership of the source.
@@ -511,6 +394,7 @@ pub(crate) enum SourceInner<'fd> {
 #[derive(Clone, Debug)]
 pub(crate) struct File {
     /// Byte contents of the file.
+    //TODO: accept `Cow<'a, [u8]>` here.
     pub(crate) contents: Vec<u8>,
 
     /// Owner of the file.
@@ -531,7 +415,7 @@ pub(crate) enum BindMount<'fd> {
         dirfd: BorrowedFd<'fd>,
 
         /// Name of the file underneath the dirfd to mount within the guest.
-        name: &'fd OsStr,
+        name: &'fd CStr,
 
         /// File descriptor representing the file to mount within the guest.
         ///
@@ -671,8 +555,4 @@ pub(crate) enum Owner {
     /// User and associated primary group specified in the policy for the
     /// sandboxed process.
     User,
-    //TODO: currently removed in anticipation of future newuidmap/newgidmap
-    //      or systemd-nsresourced support
-    /*/// Specified [`Uid`] and [`Gid`].
-    Ids { user: Uid, group: Gid },*/
 }
