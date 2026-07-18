@@ -5,8 +5,6 @@
 //TODO: in guest code, use `Vec::push_within_capacity` to ensure we don't
 //      exceed the capacity and allocate
 //TODO: install seccomp policy prior to exec or supervisor
-//FIXME: ensure needless parent-death and child-death wait logic is removed.
-//       don't introduce sigchld disp. check
 //FIXME: consider making `CLONE_PIDFD_AUTOKILL` optional, even if it simplifies
 //       logic because the host may not want the process to die automatically on
 //       thread death. will need the reintroduction of manual killing on error,
@@ -26,7 +24,7 @@ use meowix::{
     mode::Mode,
     netlink, open_beneath_and_write, retry_on_interrupt, sigaction,
     syscalls::{self, CloneResult},
-    util::{AtFd, Cwd, FdReadWriteExt, PATH_COMPONENT_MAX, WithCStr},
+    util::{AtFd, Cwd, FdReadWriteExt, PATH_COMPONENT_MAX, PATH_MAX, WithCStr},
 };
 
 use super::{
@@ -174,14 +172,11 @@ where
     // this is always unshared. see the documentation for `Namespaces` for
     // more details. the third is to ensure we are handed a pidfd to
     // the guest process.
-    let mut clone_flags = linux::CLONE_NEWUSER | linux::CLONE_PIDFD;
+    let mut clone_flags =
+        linux::CLONE_NEWUSER | linux::CLONE_NEWPID | linux::CLONE_PIDFD;
 
     if !policy.namespaces.ipc.is_shared() {
         clone_flags |= linux::CLONE_NEWIPC;
-    }
-
-    if !policy.namespaces.pid.is_shared() {
-        clone_flags |= linux::CLONE_NEWPID;
     }
 
     if !policy.namespaces.network.is_shared() {
@@ -779,6 +774,48 @@ where
                         }
                     )?;
             }
+            ResolvedMount::Symlink {
+                source,
+                destination,
+            } => {
+                let (parent_fd, file_name) =
+                    mounts::open_parent_in_root(&guest_root_fd, destination)?;
+
+                file_name.with_c_str::<{
+                    PATH_COMPONENT_MAX
+                }, _, PostSpawnGuestError>(
+                    |file_name| {
+                        if !matches!(
+                            syscalls::statx(
+                                &parent_fd,
+                                file_name,
+                                linux::AT_SYMLINK_NOFOLLOW as i32,
+                                0,
+                            ),
+                            Err(e) if e.error() == Errno::NOENT
+                        ) {
+                            //TODO: relax this
+                            Err(PostSpawnGuestOtherError::DestinationExists)?;
+                        }
+
+                        source.inner.with_c_str::<{
+                            PATH_MAX
+                        }, _, PostSpawnGuestError>(
+                            |source| {
+                                syscalls::symlinkat(
+                                    source,
+                                    parent_fd,
+                                    file_name,
+                                )?;
+
+                                Ok(())
+                            }
+                        )?;
+
+                        Ok(())
+                    }
+                )?;
+            }
             ResolvedMount::Directory {
                 permissions,
                 destination,
@@ -852,12 +889,12 @@ where
     syscalls::chdir(c"/")?;
 
     if let Namespace::Unshared(ref uts) = policy.namespaces.uts {
-        if let Some(hostname) = uts.hostname {
-            syscalls::sethostname(hostname)?;
+        if let Some(ref hostname) = uts.hostname {
+            syscalls::sethostname(&hostname)?;
         }
 
-        if let Some(domain) = uts.domain {
-            syscalls::setdomainname(domain)?;
+        if let Some(ref domain) = uts.domain {
+            syscalls::setdomainname(&domain)?;
         }
     }
 

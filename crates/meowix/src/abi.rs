@@ -56,6 +56,7 @@ pub const CLOSE_RANGE: ffi::c_long = linux::__NR_close_range as _;
 pub const EXECVEAT: ffi::c_long = linux::__NR_execveat as _;
 pub const RT_SIGACTION: ffi::c_long = linux::__NR_rt_sigaction as _;
 pub const RT_SIGPROCMASK: ffi::c_long = linux::__NR_rt_sigprocmask as _;
+pub const SYMLINKAT: ffi::c_long = linux::__NR_symlinkat as _;
 
 pub use architecture_specific::*;
 

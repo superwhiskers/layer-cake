@@ -12,8 +12,17 @@
 
 //! Linux platform system calls and abstractions.
 //!
-//! These are guaranteed to be safe to use post-`clone3(2)` and to be
-//! async-signal-safe.
+//! Except where documented otherwise, APIs that are available without the
+//! `alloc` feature perform no allocation and are designed to be usable after
+//! `clone3(2)` and from asynchronous signal handlers.
+//!
+//! These guarantees continue to apply to those APIs even when `alloc` is
+//! enabled. Enabling `alloc` only exposes additional APIs. Callers remain
+//! responsible for ensuring their use of non-`alloc` APIs are valid for the
+//! current process state.
+
+#[cfg(not(target_os = "linux"))]
+compile_error!("this crate only supports Linux");
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

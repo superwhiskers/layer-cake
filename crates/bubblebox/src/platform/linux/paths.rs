@@ -9,13 +9,14 @@
 
 use linux_raw_sys::general as linux;
 use meowix::{
-    errors::{SyscallError, WithCStrError},
+    errors::{CStrBufferTooSmall, SyscallError, WithCStrError},
     fd::{AsFd, BorrowedFd, OwnedFd},
     retry_on_interrupt, syscalls,
     util::{AtFd, Cwd, PATH_COMPONENT_MAX, PATH_MAX, WithCStr},
 };
 use std::{
     cmp::Ordering,
+    ffi,
     ffi::{CStr, CString, OsStr},
     iter,
     os::unix::ffi::OsStrExt,
@@ -441,7 +442,7 @@ impl GuestInner {
                     return Err(GuestPathError::PathContainsParent.into());
                 }
                 Component::Prefix(_) => {
-                    return Err(GuestPathError::GuestPathHasPrefix.into());
+                    return Err(GuestPathError::PathContainsPrefix.into());
                 }
             }
         }
@@ -468,6 +469,50 @@ impl GuestInner {
                 )
                 .map_err(|_| GuestPathError::Invalid)?,
         })
+    }
+
+    /// Work with this path as a single [`CStr`].
+    ///
+    /// Useful for unavoidable path-oriented syscalls like `symlinkat(2)`.
+    pub(crate) fn with_c_str<const N: usize, T, E>(
+        &self,
+        f: impl FnOnce(&CStr) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<ffi::FromBytesWithNulError> + From<CStrBufferTooSmall>,
+    {
+        //TODO: as stated in the meowix code, this could probably use
+        // maybeuninit
+        let mut buffer = [0; N];
+
+        let parent_dir_len = self.parent_dir.count_bytes();
+        let file_name_len = self.file_name.count_bytes();
+
+        //NOTE: we need one more to contain the `/` separating them
+        (parent_dir_len + file_name_len + 1 < buffer.len())
+            .ok_or(CStrBufferTooSmall)?;
+
+        //SAFETY: we established the lengths fit within the buffer
+        unsafe { buffer.get_unchecked_mut(..parent_dir_len) }
+            .copy_from_slice(self.parent_dir.to_bytes());
+
+        //SAFETY: we established the lengths fit within the buffer
+        *unsafe { buffer.get_unchecked_mut(parent_dir_len) } = b'/';
+
+        //SAFETY: we established the lenghts fit within the buffer
+        unsafe {
+            buffer.get_unchecked_mut(
+                parent_dir_len + 1..parent_dir_len + file_name_len + 1,
+            )
+        }
+        .copy_from_slice(self.file_name.to_bytes());
+
+        //SAFETY: we established the length is within our bounds
+        let c_str = CStr::from_bytes_with_nul(unsafe {
+            buffer.get_unchecked(..parent_dir_len + file_name_len + 2)
+        })?;
+
+        f(c_str)
     }
 
     /// Get the parent directory string of this guest path.

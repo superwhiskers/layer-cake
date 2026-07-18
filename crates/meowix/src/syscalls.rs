@@ -7,9 +7,7 @@
 //!
 //! Because `cargo` will unify feature flags across the dependency tree, an
 //! unrelated dependency introducing `std` to the feature flags of `rustix` may
-//! cause allocations, which are not safe post-`clone3(2)`. Another reason
-//! `rustix` was removed was that without the `std` feature flag, there is no
-//! compatibility between its `fd` module and the standard library's module.
+//! cause allocations, which are not safe post-`clone3(2)`.
 //!
 //! [`rustix`]: https://github.com/bytecodealliance/rustix
 
@@ -744,8 +742,8 @@ pub fn ppoll(
             Arg::from_mut_ptr(fds.as_mut_ptr()),
             Arg::from_usize(fds.len()),
             Arg::from_mut_ptr(timespec),
-            Arg::from_ptr(ptr::null::<linux::sigset_t>()),
-            Arg::from_usize(size_of::<linux::sigset_t>()),
+            Arg::from_ptr(ptr::null::<linux::kernel_sigset_t>()),
+            Arg::from_usize(size_of::<linux::kernel_sigset_t>()),
         )
         .wrap_syscall(Syscall::Ppoll)?
     };
@@ -1450,4 +1448,26 @@ pub fn pidfd_get_info(fd: impl AsFd) -> Result<PidfdInfoV0, SyscallError> {
     };
 
     Ok(out)
+}
+
+/// `symlinkat(2)`.
+pub fn symlinkat<'a>(
+    target: &CStr,
+    newdirfd: impl Into<AtFd<'a>>,
+    linkpath: &CStr,
+) -> Result<(), SyscallError> {
+    //SAFETY: incorrect flags have no bearing on the safety of this call.
+    //        invariants upon the argument types (fd validity, reference
+    //        validity) ensure memory safety
+    let _ = unsafe {
+        syscall3(
+            abi::SYMLINKAT,
+            Arg::from_c_str(target),
+            Arg::from_at_fd(&newdirfd.into()),
+            Arg::from_c_str(linkpath),
+        )
+        .wrap_syscall(Syscall::Symlinkat)?
+    };
+
+    Ok(())
 }

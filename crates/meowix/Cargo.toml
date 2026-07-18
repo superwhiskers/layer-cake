@@ -10,11 +10,12 @@ edition = "2024"
 license = "AGPL-3.0-only"
 
 [dependencies]
-# TODO: remove once a per-platform syscall implementation exists
-libc.workspace = true
 linux-raw-sys.workspace = true
 bytemuck.workspace = true
 bitflags.workspace = true
+
+[target.'cfg(all(target_os = "linux", not(target_arch = "x86_64")))'.dependencies]
+libc.workspace = true
 
 [features]
 default = []

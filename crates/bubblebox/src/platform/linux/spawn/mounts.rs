@@ -91,6 +91,15 @@ pub enum ResolvedMount<'a> {
         destination: &'a Guest,
     },
 
+    /// Symlink mapping.
+    Symlink {
+        /// Source of the symlink.
+        source: &'a Guest,
+
+        /// Destination of the symlink.
+        destination: &'a Guest,
+    },
+
     /// Empty directory mapping.
     Directory {
         /// Owner of the directory.
@@ -124,7 +133,7 @@ pub fn resolve_nonbind_mappings<'a, I>(
     resolved: &mut Vec<ResolvedMount<'a>>,
 ) -> Result<usize, PostSpawnGuestError>
 where
-    I: IntoIterator<Item = (&'a Guest, &'a Mount<'a>)>,
+    I: IntoIterator<Item = (&'a Guest, &'a Mount)>,
     I::IntoIter: TrustedLen,
 {
     let mappings = mappings.into_iter().enumerate();
@@ -212,6 +221,10 @@ where
                 }
             }
             MountInner::File(file) => ResolvedMount::File { file, destination },
+            MountInner::Symlink(source) => ResolvedMount::Symlink {
+                source,
+                destination,
+            },
             MountInner::EmptyDirectory { owner, permissions } => {
                 ResolvedMount::Directory {
                     owner: *owner,
@@ -342,7 +355,7 @@ pub fn resolve_bind_mappings<'a, 'b, I>(
     )>,
 ) -> Result<usize, PostSpawnGuestError>
 where
-    I: IntoIterator<Item = (&'a Guest, &'a Mount<'a>)>,
+    I: IntoIterator<Item = (&'a Guest, &'a Mount)>,
     I::IntoIter: TrustedLen,
     'a: 'b,
 {
@@ -382,7 +395,7 @@ where
                 fd,
                 attributes,
             }) => {
-                file_info = Some((*name, *fd));
+                file_info = Some((name.as_c_str(), fd.as_fd()));
 
                 //NOTE: file mounts cannot be recursive
                 (dirfd, *attributes, false)

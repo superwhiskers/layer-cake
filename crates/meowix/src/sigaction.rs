@@ -3,8 +3,8 @@
 //! Functions that work with the `rt_sigaction(2)` and `rt_sigprocmask(2)`
 //! syscalls.
 
-use linux_raw_sys::{general as linux, signal_macros as linux_sig};
 use core::{ffi, mem};
+use linux_raw_sys::{general as linux, signal_macros as linux_sig};
 
 use crate::{errors::SyscallError, syscalls};
 

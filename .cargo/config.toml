@@ -20,7 +20,7 @@ rustflags = [
     "-C", "link-arg=-Wl,-z,noexecstack",
     "-C", "link-arg=-Wl,-z,separate-code",
     # add if dlopen turns out to be unnecessary:
-    # "-C", "link-arg=-Wl,-z,nodlopen",
+    #"-C", "link-arg=-Wl,-z,nodlopen",
 ]
 
 [target.aarch64-unknown-linux-gnu]

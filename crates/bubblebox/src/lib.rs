@@ -6,7 +6,6 @@
 #![feature(const_default)]
 #![feature(trusted_len)]
 #![feature(const_range)]
-
 #![cfg_attr(feature = "systemd-cgroups", feature(trim_prefix_suffix))]
 
 //! Painless cross-platform sandboxing.

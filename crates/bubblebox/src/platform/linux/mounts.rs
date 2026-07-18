@@ -11,28 +11,31 @@
 //TODO: provide a way to take in arbitrary detached mounts as mappings
 //TODO: add selinux support through file label options for mounts, executable
 //      labels for the program
+//TODO: determine if there's a sane way to take borrowed fds here with a `Cow`
+//      equivalent (we can't implement `Borrow` or `ToOwned`).
 
 use linux_raw_sys::general as linux;
-use meowix::{fd::BorrowedFd, ids::Gid, mode::Mode};
-use std::ffi::CStr;
+use meowix::{fd::OwnedFd, ids::Gid, mode::Mode};
+use std::ffi::CString;
 
-use super::paths::{HostDirectoryRef, HostFileRef};
+use super::paths::{HostDirectory, HostFile};
+use crate::paths::Guest;
 
 /// Source of a mount.
-#[derive(Clone, Debug)]
-pub struct Mount<'fd> {
+#[derive(Debug)]
+pub struct Mount {
     /// The mount's source.
-    pub(crate) inner: MountInner<'fd>,
+    pub(crate) inner: MountInner,
 }
 
-impl<'fd> Mount<'fd> {
+impl Mount {
     #![expect(
         clippy::missing_const_for_fn,
-        reason = "constructors taking BorrowedFd, Uid, or Gid are intentionally non-const"
+        reason = "constructors taking OwnedFd, Uid, or Gid are intentionally non-const"
     )]
 
     /// Create a new source from the given inner value.
-    const fn new(inner: MountInner<'fd>) -> Self {
+    const fn new(inner: MountInner) -> Self {
         Self { inner }
     }
 
@@ -45,7 +48,7 @@ impl<'fd> Mount<'fd> {
     /// Read-only mapping of a file from the host to the guest, preserving
     /// ownership and permissions.
     #[must_use]
-    pub fn read_only_file(fd: HostFileRef<'fd>) -> Self {
+    pub fn read_only_file(fd: HostFile) -> Self {
         let (dirfd, name, fd) = fd.into_parts();
         Self::new(MountInner::Bind(BindMount::File {
             dirfd,
@@ -64,7 +67,7 @@ impl<'fd> Mount<'fd> {
     /// Read-write mapping of a file from the host to the guest, preserving
     /// ownership and permissions.
     #[must_use]
-    pub fn read_write_file(fd: HostFileRef<'fd>) -> Self {
+    pub fn read_write_file(fd: HostFile) -> Self {
         let (dirfd, name, fd) = fd.into_parts();
         Self::new(MountInner::Bind(BindMount::File {
             dirfd,
@@ -83,7 +86,7 @@ impl<'fd> Mount<'fd> {
     /// Read-write mapping of a device file from the host to the guest,
     /// preserving ownership and permissions.
     #[must_use]
-    pub fn device_file(fd: HostFileRef<'fd>) -> Self {
+    pub fn device_file(fd: HostFile) -> Self {
         let (dirfd, name, fd) = fd.into_parts();
         Self::new(MountInner::Bind(BindMount::File {
             dirfd,
@@ -102,10 +105,7 @@ impl<'fd> Mount<'fd> {
     /// Mapping of a file from the host to the guest, preserving ownership and
     /// permissions.
     #[must_use]
-    pub fn bind_file(
-        fd: HostFileRef<'fd>,
-        attributes: MountAttributes,
-    ) -> Self {
+    pub fn bind_file(fd: HostFile, attributes: MountAttributes) -> Self {
         let (dirfd, name, fd) = fd.into_parts();
         Self::new(MountInner::Bind(BindMount::File {
             dirfd,
@@ -118,7 +118,7 @@ impl<'fd> Mount<'fd> {
     /// Read-only mapping of a directory from the host to the guest, preserving
     /// ownership and permissions.
     #[must_use]
-    pub fn read_only_directory(fd: HostDirectoryRef<'fd>) -> Self {
+    pub fn read_only_directory(fd: HostDirectory) -> Self {
         Self::new(MountInner::Bind(BindMount::Directory {
             fd: fd.into_fd(),
             attributes: MountAttributes {
@@ -135,7 +135,7 @@ impl<'fd> Mount<'fd> {
     /// Read-write mapping of a directory from the host to the guest, preserving
     /// ownership and permissions.
     #[must_use]
-    pub fn read_write_directory(fd: HostDirectoryRef<'fd>) -> Self {
+    pub fn read_write_directory(fd: HostDirectory) -> Self {
         Self::new(MountInner::Bind(BindMount::Directory {
             fd: fd.into_fd(),
             attributes: MountAttributes {
@@ -153,7 +153,7 @@ impl<'fd> Mount<'fd> {
     /// and permissions.
     #[must_use]
     pub fn bind_directory(
-        fd: HostDirectoryRef<'fd>,
+        fd: HostDirectory,
         attributes: MountAttributes,
         is_recursive: bool,
     ) -> Self {
@@ -184,12 +184,12 @@ impl<'fd> Mount<'fd> {
     }
 
     /// Mapping of `proc(5)` to the given path on the guest with the pid
-    /// namespace referred to by the specified [`BorrowedFd`].
+    /// namespace referred to by the specified [`OwnedFd`].
     #[must_use]
     pub fn proc_with_pid_namespace(
         hidepid: ProcHidepid,
         subset: ProcSubset,
-        namespace: BorrowedFd<'fd>,
+        namespace: OwnedFd,
     ) -> Self {
         Self::new(MountInner::Procfs {
             hidepid,
@@ -231,15 +231,15 @@ impl<'fd> Mount<'fd> {
     }
 
     /// Mapping of `proc(5)` with the pid namespace of the specified
-    /// [`BorrowedFd`] to the given path on the guest with the specified
-    /// [`Gid`] allowed full process information regardless of the
-    /// [`ProcHidepid`] setting.
+    /// [`OwnedFd`] to the given path on the guest with the specified [`Gid`]
+    /// allowed full process information regardless of the [`ProcHidepid`]
+    /// setting.
     #[must_use]
     pub fn proc_with_privileged_gid_and_pid_namespace(
         hidepid: ProcHidepid,
         gid: Gid,
         subset: ProcSubset,
-        namespace: BorrowedFd<'fd>,
+        namespace: OwnedFd,
     ) -> Self {
         Self::new(MountInner::Procfs {
             hidepid,
@@ -285,6 +285,13 @@ impl<'fd> Mount<'fd> {
         }))
     }
 
+    /// Mapping of an arbitrary path on the guest to another path on the guest,
+    /// using a symlink.
+    #[must_use]
+    pub const fn symlink(source: Guest) -> Self {
+        Self::new(MountInner::Symlink(source))
+    }
+
     /// Mapping of an empty directory to a given path on the guest.
     ///
     /// The materialized directory will be owned by the user and group
@@ -326,12 +333,12 @@ impl<'fd> Mount<'fd> {
 //TODO: maybe add a "don't create the destination" flag to bind mounts to
 //      give the user the option to make it themselves
 #[non_exhaustive]
-#[derive(Clone, Debug)]
-pub(crate) enum MountInner<'fd> {
+#[derive(Debug)]
+pub(crate) enum MountInner {
     /// A bind-mount sourced from the host.
     ///
     /// Preserves the permissions and ownership of the source.
-    Bind(BindMount<'fd>),
+    Bind(BindMount),
 
     /// `proc(5)` filesystem mount.
     Procfs {
@@ -347,7 +354,7 @@ pub(crate) enum MountInner<'fd> {
         subset: ProcSubset,
 
         /// Pid namespace for the procfs to use to translate pids.
-        namespace: ProcPidNamespace<'fd>,
+        namespace: ProcPidNamespace,
 
         /// Attributes to apply to the mount.
         attributes: MountAttributes,
@@ -361,6 +368,9 @@ pub(crate) enum MountInner<'fd> {
 
     /// Mapping sourced from the contents of a file.
     File(File),
+
+    /// Symbolic link on the guest.
+    Symlink(Guest),
 
     /// Empty directory mapping.
     EmptyDirectory {
@@ -406,22 +416,22 @@ pub(crate) struct File {
 
 /// Mapping using a bind mount from the host.
 #[non_exhaustive]
-#[derive(Clone, Debug)]
-pub(crate) enum BindMount<'fd> {
+#[derive(Debug)]
+pub(crate) enum BindMount {
     /// Bind mount of a file.
     File {
         /// File descriptor representing the parent directory of the file to
         /// mount within the guest.
-        dirfd: BorrowedFd<'fd>,
+        dirfd: OwnedFd,
 
         /// Name of the file underneath the dirfd to mount within the guest.
-        name: &'fd CStr,
+        name: CString,
 
         /// File descriptor representing the file to mount within the guest.
         ///
         /// This is used to verify that we actually mounted the intended file
         /// after the mount has been moved to the guest, not to mount it.
-        fd: BorrowedFd<'fd>,
+        fd: OwnedFd,
 
         /// Attributes to bind-mount the path with.
         attributes: MountAttributes,
@@ -431,7 +441,7 @@ pub(crate) enum BindMount<'fd> {
     Directory {
         /// File descriptor representing the directory to mount within the
         /// guest.
-        fd: BorrowedFd<'fd>,
+        fd: OwnedFd,
 
         /// Attributes to bind-mount the path with.
         attributes: MountAttributes,
@@ -539,13 +549,13 @@ pub enum ProcSubset {
 
 /// `proc(5)` pid namespace to use.
 #[non_exhaustive]
-#[derive(Copy, Clone, Debug)]
-pub(crate) enum ProcPidNamespace<'a> {
+#[derive(Debug)]
+pub(crate) enum ProcPidNamespace {
     /// The pid namespace of the guest.
     Guest,
 
     /// The pid namespace referred to by the given file descriptor.
-    Fd(BorrowedFd<'a>),
+    Fd(OwnedFd),
 }
 
 /// Owner of a materialized mapping.

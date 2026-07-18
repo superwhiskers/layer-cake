@@ -3,6 +3,7 @@
 //! Per-namespace policy structures.
 
 use meowix::ids::{Gid, Uid};
+use std::borrow::Cow;
 
 //TODO: add back arbitrary id mappings by having the parent call
 //      newuidmap/newgidmap
@@ -30,10 +31,11 @@ pub const KTIME_SEC_MAX: i64 = i64::MAX / 1_000_000_000;
 ///   privileges, regardless of the process' uid.
 /// - cgroup namespaces are always used because they don't do much other than
 ///   change the view of cgroups that the sandbox gets.
+/// - Process ID namespaces are always unshared to tie the lifetime of the
+///   sandboxed process tree to the init process.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct Namespaces<'a> {
     pub(in super::super) ipc: Namespace<IpcOptions>,
-    pub(in super::super) pid: Namespace<PidOptions>,
     pub(in super::super) network: Namespace<NetworkOptions>,
     pub(in super::super) uts: Namespace<UtsOptions<'a>>,
     pub(in super::super) time: Namespace<TimeOptions>,
@@ -52,20 +54,6 @@ impl<'a> Namespaces<'a> {
     /// There is nothing to configure for these, so no options are provided.
     pub fn unshare_ipc(mut self) -> Self {
         self.ipc = Namespace::Unshared(IpcOptions);
-        self
-    }
-
-    /// Share the pid namespace.
-    pub fn share_pid(mut self) -> Self {
-        self.pid = Namespace::Shared;
-        self
-    }
-
-    /// Unshare the pid namespace.
-    ///
-    /// There is nothing to configure for these, so no options are provided.
-    pub fn unshare_pid(mut self) -> Self {
-        self.pid = Namespace::Unshared(PidOptions);
         self
     }
 
@@ -182,10 +170,6 @@ where
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub struct IpcOptions;
 
-/// Pid namespace policy.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
-pub struct PidOptions;
-
 /// Network namespace policy.
 #[expect(
     missing_copy_implementations,
@@ -212,7 +196,7 @@ pub struct UtsOptions<'a> {
     /// applications may have expectations of this field. At a minimum, treat
     /// this field as if it were only containing alphanumerical characters as
     /// well as not starting with a period or a hyphen.
-    pub(in super::super) hostname: Option<&'a [u8]>,
+    pub(in super::super) hostname: Option<Cow<'a, [u8]>>,
 
     /// Domain name to set with `setdomainname(2)`.
     ///
@@ -224,7 +208,7 @@ pub struct UtsOptions<'a> {
     /// applications may have expectations of this field. At a minimum, treat
     /// this field as if it were only containing alphanumerical characters as
     /// well as not starting with a hyphen.
-    pub(in super::super) domain: Option<&'a [u8]>,
+    pub(in super::super) domain: Option<Cow<'a, [u8]>>,
 }
 
 impl<'a> UtsOptions<'a> {
@@ -236,8 +220,8 @@ impl<'a> UtsOptions<'a> {
     /// applications may have expectations of this field. At a minimum, treat
     /// this field as if it were only containing alphanumerical characters as
     /// well as not starting with a period or a hyphen.
-    pub fn set_hostname(mut self, hostname: &'a [u8]) -> Self {
-        self.hostname = Some(hostname);
+    pub fn set_hostname(mut self, hostname: impl Into<Cow<'a, [u8]>>) -> Self {
+        self.hostname = Some(hostname.into());
         self
     }
 
@@ -260,8 +244,8 @@ impl<'a> UtsOptions<'a> {
     /// applications may have expectations of this field. At a minimum, treat
     /// this field as if it were only containing alphanumerical characters as
     /// well as not starting with a hyphen.
-    pub fn set_domain(mut self, domain: &'a [u8]) -> Self {
-        self.domain = Some(domain);
+    pub fn set_domain(mut self, domain: impl Into<Cow<'a, [u8]>>) -> Self {
+        self.domain = Some(domain.into());
         self
     }
 

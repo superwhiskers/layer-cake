@@ -14,8 +14,6 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
-        "aarch64-darwin"
       ];
       forAllSystems =
         f:
@@ -32,10 +30,20 @@
     in
     {
       devShells = forAllSystems (
-        { pkgs, ... }:
+        { pkgs, system, ... }:
         let
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-          cross = pkgs.pkgsCross.gnu32;
+          staticPkgs = pkgs.pkgsStatic;
+
+          target =
+            {
+              x86_64-linux = "x86_64-unknown-linux-musl";
+              aarch64-linux = "aarch64-unknown-linux-musl";
+            }
+            .${system};
+
+          targetUnderscore = pkgs.lib.replaceStrings [ "-" ] [ "_" ] target;
+          targetUpper = pkgs.lib.toUpper targetUnderscore;
         in
         {
           default = pkgs.mkShell {
@@ -43,33 +51,20 @@
               rustToolchain
               pkgs.cargo-deny
               pkgs.pkg-config
-              pkgs.dbus.lib
-              pkgs.dbus.dev
-
-              # used for testing 32-bit compatibility
-              cross.stdenv.cc
             ];
 
+            CARGO_BUILD_TARGET = target;
             shellHook = ''
-              export CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER=${cross.stdenv.cc}/bin/${cross.stdenv.cc.targetPrefix}cc
+              export CARGO_TARGET_${targetUpper}_LINKER="${staticPkgs.stdenv.cc}/bin/${target}-cc"
+
+              # Used by crates whose build.rs invokes the cc crate.
+              export CC_${targetUnderscore}="${staticPkgs.stdenv.cc}/bin/${target}-cc"
             '';
+
+            PKG_CONFIG_ALL_STATIC = "1";
+            PKG_CONFIG_ALLOW_CROSS = "1";
           };
         }
       );
-      packages = forAllSystems (
-        { pkgs, ... }: {
-          linuxHeaders = pkgs.linuxHeaders.overrideAttrs (
-            final: _: {
-              version = "7.1.3";
-              src = pkgs.fetchurl {
-                url = "mirror://kernel/linux/kernel/v${pkgs.lib.versions.major final.version}.x/linux-${final.version}.tar.xz";
-                hash = "sha256-vkHAaOiPUkKhm8zb/74HexjEe0X2J+IyVQS0+red0dw=";
-              };
-              patches = [ ];
-            }
-          );
-        }
-      );
-
     };
 }

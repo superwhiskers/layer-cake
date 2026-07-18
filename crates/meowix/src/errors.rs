@@ -2,6 +2,8 @@
 
 //! Error representation for syscalls and netlink calls.
 
+use core::{error, fmt};
+
 #[cfg(feature = "alloc")]
 use alloc::string::FromUtf8Error;
 
@@ -38,6 +40,36 @@ pub enum Netlink {
     /// Syscall error.
     Syscall(SyscallError),
 }
+
+impl fmt::Display for Netlink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MalformedHeader => {
+                f.write_str("malformed header in netlink message")
+            }
+            Self::TruncatedMessage => {
+                f.write_str("netlink message was truncated")
+            }
+            Self::SequenceMismatch => {
+                f.write_str("netlink message had a mismatched sequence number")
+            }
+            Self::IncorrectSize => {
+                f.write_str("netlink message was of the incorrect size")
+            }
+            Self::BufferTooSmall => {
+                f.write_str("a fixed-size buffer was too small")
+            }
+            Self::IntegerOverflow => {
+                f.write_str("a fixed-width integer would have overflowed")
+            }
+            Self::IncompleteWrite => f.write_str("a write was incomplete"),
+            Self::Errno(e) => write!(f, "netlink error: {e}"),
+            Self::Syscall(e) => write!(f, "syscall error: {e}"),
+        }
+    }
+}
+
+impl error::Error for Netlink {}
 
 impl From<IncompleteWrite> for Netlink {
     fn from(_: IncompleteWrite) -> Self {
@@ -87,6 +119,18 @@ impl SyscallError {
         self.error
     }
 }
+
+impl fmt::Display for SyscallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "encountered {} while calling {}",
+            self.error, self.syscall
+        )
+    }
+}
+
+impl error::Error for SyscallError {}
 
 /// Extension trait for a [`Result`] containing an [`Errno`] that wraps the
 /// error in a [`SyscallError`].
@@ -239,8 +283,64 @@ pub enum Syscall {
     /// `execveat(2)`.
     Execveat = 43,
 
+    /// `symlinkat(2)`.
+    Symlinkat = 44,
+
     /// Syscall variant was not recognized.
     Unknown = u8::MAX,
+}
+
+impl fmt::Display for Syscall {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Pipe2 => "pipe2(2)",
+            Self::Clone3 => "clone3(2)",
+            Self::Openat2 => "openat2(2)",
+            Self::Write => "write(2)",
+            Self::OpenTree => "open_tree(2)",
+            Self::OpenTreeAttr => "open_tree_attr(2)",
+            Self::Dup3 => "dup3(2)",
+            Self::MountSetattr => "mount_setattr(2)",
+            Self::Statx => "statx(2)",
+            Self::Read => "read(2)",
+            Self::Mkdirat => "mkdirat(2)",
+            Self::Eventfd2 => "eventfd2(2)",
+            Self::CloseRange => "close_range(2)",
+            Self::Capset => "capset(2)",
+            Self::Prctl => "prctl(2)",
+            Self::Unshare => "unshare(2)",
+            Self::Setsid => "setsid(2)",
+            Self::Setdomainname => "setdomainname(2)",
+            Self::Sethostname => "sethostname(2)",
+            Self::Chdir => "chdir(2)",
+            Self::Umount2 => "umount2(2)",
+            Self::Chroot => "chroot(2)",
+            Self::MoveMount => "move_mount(2)",
+            Self::Fchdir => "fchdir(2)",
+            Self::Fsmount => "fsmount(2)",
+            Self::Fsconfig => "fsconfig(2)",
+            Self::Fsopen => "fsopen(2)",
+            Self::Mount => "mount(2)",
+            Self::Setns => "setns(2)",
+            Self::RtSigaction => "rt_sigaction(2)",
+            Self::RtSigprocmask => "rt_sigprocmask(2)",
+            Self::Ppoll => "ppoll(2)",
+            Self::Recvfrom => "recvfrom(2)",
+            Self::Sendto => "sendto(2)",
+            Self::Socket => "socket(2)",
+            Self::Ioctl => "ioctl(2)",
+            Self::PidfdOpen => "pidfd_open(2)",
+            Self::Getegid => "getegid(2)",
+            Self::Geteuid => "geteuid(2)",
+            Self::Gettid => "gettid(2)",
+            Self::PidfdSendSignal => "pidfd_send_signal(2)",
+            Self::Umask => "umask(2)",
+            Self::Waitid => "waitid(2)",
+            Self::Execveat => "execveat(2)",
+            Self::Symlinkat => "symlinkat(2)",
+            Self::Unknown => "unknown syscall",
+        })
+    }
 }
 
 impl From<u8> for Syscall {
@@ -290,6 +390,7 @@ impl From<u8> for Syscall {
             41 => Syscall::Umask,
             42 => Syscall::Waitid,
             43 => Syscall::Execveat,
+            44 => Syscall::Symlinkat,
             _ => Syscall::Unknown,
         }
     }
@@ -299,9 +400,25 @@ impl From<u8> for Syscall {
 #[derive(Copy, Clone, Debug)]
 pub struct CStrBufferTooSmall;
 
+impl fmt::Display for CStrBufferTooSmall {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a buffer used for C string conversion was too small")
+    }
+}
+
+impl error::Error for CStrBufferTooSmall {}
+
 /// Indicates that a write was not complete.
 #[derive(Copy, Clone, Debug)]
 pub struct IncompleteWrite;
+
+impl fmt::Display for IncompleteWrite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a write was incomplete")
+    }
+}
+
+impl error::Error for IncompleteWrite {}
 
 /// Error that may be converted to by [`CStrBufferTooSmall`] and
 /// [`core::ffi::FromBytesWithNulError`] for convenience.
@@ -313,6 +430,21 @@ pub enum WithCStrError {
     /// Type being converted to a [`core::ffi::CStr`] was invalid.
     FromBytesWithNulError(core::ffi::FromBytesWithNulError),
 }
+
+impl fmt::Display for WithCStrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CStrBufferTooSmall => f.write_str(
+                "a buffer used for C string conversion was too small",
+            ),
+            Self::FromBytesWithNulError(e) => {
+                write!(f, "C string conversion error: {e}")
+            }
+        }
+    }
+}
+
+impl error::Error for WithCStrError {}
 
 impl From<CStrBufferTooSmall> for WithCStrError {
     fn from(_: CStrBufferTooSmall) -> Self {
@@ -337,6 +469,22 @@ pub struct PartialTransfer {
     pub error: Option<SyscallError>,
 }
 
+impl fmt::Display for PartialTransfer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(error) = self.error {
+            write!(
+                f,
+                "partial transfer of only {} bytes: {error}",
+                self.transferred
+            )
+        } else {
+            write!(f, "partial transfer of only {} bytes", self.transferred)
+        }
+    }
+}
+
+impl error::Error for PartialTransfer {}
+
 /// Error that may be either a [`SyscallError`] or a [`FromUtf8Error`].
 #[cfg(feature = "alloc")]
 #[derive(Clone, Debug)]
@@ -347,6 +495,17 @@ pub enum StringRead {
     /// UTF-8 conversion error.
     Utf8(FromUtf8Error),
 }
+
+impl fmt::Display for StringRead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syscall(e) => write!(f, "syscall error: {e}"),
+            Self::Utf8(e) => write!(f, "UTF-8 conversion error: {e}"),
+        }
+    }
+}
+
+impl error::Error for StringRead {}
 
 #[cfg(feature = "alloc")]
 impl From<SyscallError> for StringRead {

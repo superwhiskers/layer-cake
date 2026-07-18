@@ -7,8 +7,7 @@
 //TODO: add rlimit support. modify cgroups documentation to reflect that there
 //      would then be another way to enforce resource usage (but cgroups are
 //      more powerful)
-//TODO: add back die with parent thread to the policy once we've implemented
-//      the new linux 7.1 clone flags
+//TODO: try to get `Clone` back on here somehow
 
 use meowix::{capabilities::CapabilitySet, syscalls, util::Cwd};
 use std::ptr;
@@ -29,7 +28,7 @@ use namespace::Namespaces;
 use seccompiler::SeccompFilter;
 
 #[cfg(feature = "systemd-cgroups")]
-use super::cgroups::SystemdCgroups;
+use super::cgroups::{SystemdState, SystemdCgroups};
 
 pub mod errors;
 pub mod fd;
@@ -37,10 +36,10 @@ pub mod mounts;
 pub mod namespace;
 
 /// Sandbox policy builder.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Policy<'a, CgroupsBackend> {
     /// Map of destinations to their mount source.
-    pub(super) mount_tree: MountTree<'a>,
+    pub(super) mount_tree: MountTree,
 
     /// Namespace configuration.
     pub(super) namespaces: Namespaces<'a>,
@@ -103,41 +102,8 @@ impl<'a> Policy<'a, NullCgroups> {
     /// # Errors
     ///
     /// This method errors if setting up the sandbox fails.
-    pub fn spawn(&self, command: &Command) -> Result<Guest, Error> {
-        //SAFETY: the only thing the callback does is change the working
-        //        directory and return the spawn action. argv and envp
-        //        are null-terminated due to our implementation of
-        //        [`Command`]
-        let (pid, pidfd, _cgroups) = unsafe {
-            spawn::clone_into(
-                self,
-                move || {
-                    syscalls::chdir(
-                        command.inner.working_directory.as_c_str(),
-                    )?;
-
-                    Ok(SpawnAction::Exec {
-                        //NOTE: there's no way to get an fd in the sandbox
-                        //      prior to making it
-                        dirfd: Cwd,
-                        path: command.inner.path.as_c_str(),
-                        //FIXME: actually pass all of these in
-                        argv: &command.inner.arguments,
-                        envp: [ptr::null()],
-                        flags: 0,
-                    })
-                },
-                (),
-            )?
-        };
-        Ok(Guest {
-            inner: GuestInner {
-                pidfd,
-                pid,
-                //FIXME: move this to be part of the cgroups api
-                cgroups_destructor: None,
-            },
-        })
+    pub fn spawn(&self, command: &Command) -> Result<Guest<'_>, Error> {
+        self.spawn_with(command, ())
     }
 }
 
@@ -191,12 +157,70 @@ impl<'a> Policy<'a, SystemdCgroups> {
         self.cgroups = configure(Cgroups::new_systemd());
         self
     }
+
+    /// Executes the given [`Command`], sandboxed according to this policy.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if setting up the sandbox fails.
+    pub fn spawn(&self, command: &Command) -> Result<Guest<'_>, Error> {
+        self.spawn_with(command, SystemdState::new()?)
+    }
 }
 
 impl<'a, CgroupsBackend> Policy<'a, CgroupsBackend>
 where
     CgroupsBackend: cgroups::Backend,
 {
+    /// Executes the given [`Command`], sandboxed according to this policy.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if setting up the sandbox fails.
+    fn spawn_with(
+        &self,
+        command: &Command,
+        cgroups_state: CgroupsBackend::State,
+    ) -> Result<Guest<'_>, Error> {
+        //SAFETY: the only thing the callback does is change the working
+        //        directory and return the spawn action. argv and envp
+        //        are null-terminated due to our implementation of
+        //        [`Command`]
+        let (pid, pidfd, final_cgroups_state) = unsafe {
+            spawn::clone_into(
+                self,
+                move || {
+                    syscalls::chdir(
+                        command.inner.working_directory.as_c_str(),
+                    )?;
+
+                    Ok(SpawnAction::Exec {
+                        //NOTE: there's no way to get an fd in the sandbox
+                        //      prior to making it
+                        dirfd: Cwd,
+                        path: command.inner.program.as_c_str(),
+                        //FIXME: actually pass all of these in
+                        argv: &command.inner.arguments,
+                        envp: [ptr::null()],
+                        flags: 0,
+                    })
+                },
+                cgroups_state,
+            )?
+        };
+
+        Ok(Guest {
+            inner: GuestInner {
+                pidfd,
+                pid,
+                //FIXME: move this to be part of the cgroups api
+                cgroups_destructor: Some(Box::new(|| {
+                    Ok(self.cgroups.teardown(final_cgroups_state)?)
+                })),
+            },
+        })
+    }
+
     /// Modify the mount tree of the sandbox.
     ///
     /// # Errors
@@ -204,11 +228,9 @@ where
     /// This method errors if the edited mount tree is invalid.
     pub fn mount_tree(
         mut self,
-        //TODO: should we provide a less costly interface which doesn't clone
-        //      the internal state of the [`BTreeMap`]?
-        configure: impl FnOnce(MountTree<'a>) -> MountTree<'a>,
+        configure: impl FnOnce(MountTree) -> MountTree,
     ) -> Result<Self, Error> {
-        let new_mounts = configure(self.mount_tree.clone());
+        let new_mounts = configure(self.mount_tree);
         new_mounts
             .is_valid()
             .ok_or(PolicyError::InvalidMountPolicy)?;

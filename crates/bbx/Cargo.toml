@@ -1,0 +1,23 @@
+[package]
+name = "bbx"
+description = "bubblebox CLI"
+version = "0.0.0"
+authors = ["superwhiskers <whiskerdev@protonmail.com>"]
+repository = "https://git.errno.systems/layer-cake"
+# TODO: should get its own readme once more complete
+readme = "../../readme.md"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+anyhow = "1"
+lexopt.workspace = true
+bubblebox.workspace = true
+
+[dependencies.zip]
+version = "8"
+default-features = false
+features = ["bzip2", "deflate", "deflate64", "lzma", "ppmd", "xz", "zstd"]
+
+[lints]
+workspace = true

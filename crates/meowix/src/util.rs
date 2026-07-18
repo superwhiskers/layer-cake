@@ -15,14 +15,14 @@ use crate::{
     errno::Errno,
     errors::{
         CStrBufferTooSmall, IncompleteWrite,
-        PartialTransfer as PartialTransferError, SyscallError,
+        PartialTransfer as PartialTransferError,
     },
     fd::{AsFd, BorrowedFd, OwnedFd},
     syscalls,
 };
 
 #[cfg(feature = "alloc")]
-use crate::errors::StringRead as StringReadError;
+use crate::errors::{StringRead as StringReadError, SyscallError};
 
 /// Typical [`WithCStr`] buffer length for single path components.
 ///

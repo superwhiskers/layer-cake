@@ -22,7 +22,7 @@ use crate::paths::Guest;
 /// - No mount is underneath a non-synthetic mount.
 ///
 /// This restriction may be relaxed in the future on an opt-in basis.
-fn is_valid_mount_tree(mounts: &BTreeMap<Guest, Mount<'_>>) -> bool {
+fn is_valid_mount_tree(mounts: &BTreeMap<Guest, Mount>) -> bool {
     let mut stack: Vec<(&Guest, bool)> = Vec::new();
 
     for (destination, source) in mounts {
@@ -45,17 +45,17 @@ fn is_valid_mount_tree(mounts: &BTreeMap<Guest, Mount<'_>>) -> bool {
 }
 
 /// View of a mount tree.
-#[derive(Clone, Debug, Default)]
-pub struct MountTree<'a>(pub(in super::super) BTreeMap<Guest, Mount<'a>>);
+#[derive(Debug, Default)]
+pub struct MountTree(pub(in super::super) BTreeMap<Guest, Mount>);
 
-impl<'a> MountTree<'a> {
+impl MountTree {
     /// Creates an empty mount tree.
     pub fn empty() -> Self {
         Self(BTreeMap::new())
     }
 
     /// Insert `mount` into the mount tree at `path`.
-    pub fn mount(mut self, mount: Mount<'a>, path: Guest) -> Self {
+    pub fn mount(mut self, mount: Mount, path: Guest) -> Self {
         drop(self.0.insert(path, mount));
         self
     }

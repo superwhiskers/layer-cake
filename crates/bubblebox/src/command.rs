@@ -2,7 +2,7 @@
 
 //! Generic command interface to bubblebox.
 
-use std::process::ExitStatus;
+use std::{ffi::OsStr, process::ExitStatus};
 
 use crate::{
     errors::Error,
@@ -20,13 +20,60 @@ pub struct Command {
     pub(crate) inner: CommandInner,
 }
 
-/// Sandboxed process.
-#[derive(Debug)]
-pub struct Guest {
-    pub(crate) inner: GuestInner,
+impl Command {
+    /// Construct a new command for launching the program at the path `program`
+    /// within the sandbox.
+    ///
+    /// This has the following defauts:
+    ///
+    /// - No arguments to the program (except for its path on Linux).
+    /// - Empty environment.
+    /// - Working directory of `/`.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the underlying platform implementation errors.
+    pub fn new(program: impl AsRef<OsStr>) -> Result<Self, Error> {
+        Ok(Self {
+            inner: CommandInner::new(program)?,
+        })
+    }
+
+    /// Add an argument to the program.
+    ///
+    /// Only one may be passed per call.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the underlying platform implementation errors.
+    pub fn arg(self, arg: impl AsRef<OsStr>) -> Result<Self, Error> {
+        Ok(Self {
+            inner: self.inner.arg(arg)?,
+        })
+    }
+
+    /// Add multiple arguments to the program.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the underlying platform implementation errors.
+    pub fn args(
+        self,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            inner: self.inner.args(args)?,
+        })
+    }
 }
 
-impl Guest {
+/// Sandboxed process.
+#[derive(Debug)]
+pub struct Guest<'a> {
+    pub(crate) inner: GuestInner<'a>,
+}
+
+impl<'a> Guest<'a> {
     /// Return the process identifier.
     pub fn id(&self) -> u32 {
         self.inner.id()

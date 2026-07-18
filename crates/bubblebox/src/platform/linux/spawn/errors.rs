@@ -2,6 +2,7 @@
 
 //! Error types surfaced during sandbox spawn.
 
+use core::{error, fmt};
 use meowix::{
     errno::Errno,
     errors::{
@@ -22,6 +23,17 @@ pub enum PreSpawn {
     /// An error occurred on the host.
     Host(Host),
 }
+
+impl fmt::Display for PreSpawn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syscall(e) => write!(f, "syscall error: {e}"),
+            Self::Host(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl error::Error for PreSpawn {}
 
 impl From<SyscallError> for PreSpawn {
     fn from(error: SyscallError) -> Self {
@@ -67,6 +79,34 @@ pub enum PostSpawnHost {
     /// An error occurred on the host.
     Host(Host),
 }
+
+impl fmt::Display for PostSpawnHost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syscall(e) => write!(f, "syscall error: {e}"),
+            #[cfg(feature = "systemd-cgroups")]
+            Self::Dbus(e) => write!(f, "dbus error: {e}"),
+            #[cfg(feature = "systemd-cgroups")]
+            Self::CStrBufferTooSmall => f.write_str(
+                "a buffer used for C string conversion was too small",
+            ),
+            #[cfg(feature = "systemd-cgroups")]
+            Self::FromBytesWithNulError(e) => {
+                write!(f, "C string conversion error: {e}")
+            }
+            Self::PodCastError(e) => {
+                write!(f, "casting of child error information failed: {e}")
+            }
+            Self::IncompleteWrite => f.write_str("a write was incomplete"),
+            Self::InvalidCgroupsState => {
+                f.write_str("cgroups initialization entered an invalid state")
+            }
+            Self::Host(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl error::Error for PostSpawnHost {}
 
 impl From<SyscallError> for PostSpawnHost {
     fn from(error: SyscallError) -> Self {
@@ -132,6 +172,24 @@ pub enum Host {
     MissingCgroupController(&'static str),
 }
 
+impl fmt::Display for Host {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syscall(e) => write!(f, "syscall error: {e}"),
+            Self::StringRead(e) => {
+                write!(f, "reading from an fd into a string failed: {e}")
+            }
+            Self::IncompleteWrite => f.write_str("a write was incomplete"),
+            Self::MissingCgroupController(n) => write!(
+                f,
+                "the `{n}` cgroup controller was requested but missing"
+            ),
+        }
+    }
+}
+
+impl error::Error for Host {}
+
 impl From<SyscallError> for Host {
     fn from(error: SyscallError) -> Self {
         Self::Syscall(error)
@@ -177,6 +235,28 @@ pub enum PostSpawnGuest {
     /// variant.
     InvalidWireFormat,
 }
+
+impl fmt::Display for PostSpawnGuest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syscall(e) => write!(f, "syscall error: {e}"),
+            Self::Netlink(e) => write!(f, "netlink error: {e}"),
+            Self::Other(e) => write!(f, "{e}"),
+            Self::IncompleteWrite => f.write_str("a write was incomplete"),
+            Self::CStrBufferTooSmall => f.write_str(
+                "a buffer used for C string conversion was too small",
+            ),
+            Self::FromBytesWithNulError => {
+                f.write_str("C string conversion error")
+            }
+            Self::InvalidWireFormat => {
+                f.write_str("wire format received from child was invalid")
+            }
+        }
+    }
+}
+
+impl error::Error for PostSpawnGuest {}
 
 impl From<SyscallError> for PostSpawnGuest {
     fn from(error: SyscallError) -> Self {
@@ -293,6 +373,26 @@ pub enum PostSpawnGuestOther {
     /// A bind-mapped file did not have the expected file identity.
     BindMappedFileMismatch = 8,
 }
+
+impl fmt::Display for PostSpawnGuestOther {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::InvalidCgroupsState => {
+                "cgroups initialization entered an invalid state"
+            }
+            Self::BufferTooSmall => "a fixed-size buffer was too small",
+            Self::IntegerOverflow => "integer overflow would have occurred",
+            Self::InvalidDirectoryMountPoint => "an invalid directory mount point was provided",
+            Self::InvalidRegularFileMountPoint => "an invalid regular file mount point was provided",
+            Self::DestinationExists => "a mount destination already existed",
+            Self::MappingsLengthMismatch => "there was a mismatch between the number of mappings resolved and the length of the mappings vector",
+            Self::NonzeroResolvedLen => "the length of the resolved mappings vector was not zero when it should have been",
+            Self::BindMappedFileMismatch => "a bind-mapped file did not have the expected file identity",
+        })
+    }
+}
+
+impl error::Error for PostSpawnGuestOther {}
 
 impl From<u8> for PostSpawnGuest {
     fn from(value: u8) -> Self {
