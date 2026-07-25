@@ -25,10 +25,11 @@ pub fn drop_bounding_set(
             continue;
         }
 
-        if let Err(e) = syscalls::drop_capability_from_bounding_set(cap as _)
-            //NOTE: einval implies the capability was not known to the kernel
-            && !matches!(e.error(), Errno::INVAL)
-        {
+        if let Err(e) = syscalls::drop_capability_from_bounding_set(cap as _) {
+            //NOTE: the capability space is contiguous so we can stop here
+            if e.error() == Errno::INVAL {
+                break;
+            }
             return Err(e);
         }
     }
@@ -49,8 +50,11 @@ pub fn set_ambient_capabilities(
             && let Err(e) =
                 //NOTE: more c type messiness
                 syscalls::raise_capability_into_ambient_set(cap as _)
-            && !matches!(e.error(), Errno::INVAL)
         {
+            //NOTE: the capability space is contiguous so we can stop here
+            if e.error() == Errno::INVAL {
+                break;
+            }
             return Err(e);
         }
     }
@@ -93,132 +97,79 @@ impl CapabilitySets {
     }
 }
 
-bitflags::bitflags! {
-    /// Linux `CAP_*` constants.
-    #[repr(transparent)]
-    #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
-    pub struct CapabilitySet: u64 {
-        /// `CAP_CHOWN`.
-        const CHOWN = 1 << linux::CAP_CHOWN;
+macro_rules! capabilities {
+    ($(($name:ident, $constant:ident)),*) => {
+        capabilities!(@structure $(($name, $constant)),*);
 
-        /// `CAP_DAC_OVERRIDE`.
-        const DAC_OVERRIDE = 1 << linux::CAP_DAC_OVERRIDE;
-
-        /// `CAP_DAC_READ_SEARCH`.
-        const DAC_READ_SEARCH = 1 << linux::CAP_DAC_READ_SEARCH;
-
-        /// `CAP_FOWNER`.
-        const FOWNER = 1 << linux::CAP_FOWNER;
-
-        /// `CAP_FSETID`.
-        const FSETID = 1 << linux::CAP_FSETID;
-
-        /// `CAP_KILL`.
-        const KILL = 1 << linux::CAP_KILL;
-
-        /// `CAP_SETGID`.
-        const SETGID = 1 << linux::CAP_SETGID;
-
-        /// `CAP_SETUID`.
-        const SETUID = 1 << linux::CAP_SETUID;
-
-        /// `CAP_SETPCAP`.
-        const SETPCAP = 1 << linux::CAP_SETPCAP;
-
-        /// `CAP_LINUX_IMMUTABLE`.
-        const LINUX_IMMUTABLE = 1 << linux::CAP_LINUX_IMMUTABLE;
-
-        /// `CAP_NET_BIND_SERVICE`.
-        const NET_BIND_SERVICE = 1 << linux::CAP_NET_BIND_SERVICE;
-
-        /// `CAP_NET_BROADCAST`.
-        const NET_BROADCAST = 1 << linux::CAP_NET_BROADCAST;
-
-        /// `CAP_NET_ADMIN`.
-        const NET_ADMIN = 1 << linux::CAP_NET_ADMIN;
-
-        /// `CAP_NET_RAW`.
-        const NET_RAW = 1 << linux::CAP_NET_RAW;
-
-        /// `CAP_IPC_LOCK`.
-        const IPC_LOCK = 1 << linux::CAP_IPC_LOCK;
-
-        /// `CAP_IPC_OWNER`.
-        const IPC_OWNER = 1 << linux::CAP_IPC_OWNER;
-
-        /// `CAP_SYS_MODULE`.
-        const SYS_MODULE = 1 << linux::CAP_SYS_MODULE;
-
-        /// `CAP_SYS_RAWIO`.
-        const SYS_RAWIO = 1 << linux::CAP_SYS_RAWIO;
-
-        /// `CAP_SYS_CHROOT`.
-        const SYS_CHROOT = 1 << linux::CAP_SYS_CHROOT;
-
-        /// `CAP_SYS_PTRACE`.
-        const SYS_PTRACE = 1 << linux::CAP_SYS_PTRACE;
-
-        /// `CAP_SYS_PACCT`.
-        const SYS_PACCT = 1 << linux::CAP_SYS_PACCT;
-
-        /// `CAP_SYS_ADMIN`.
-        const SYS_ADMIN = 1 << linux::CAP_SYS_ADMIN;
-
-        /// `CAP_SYS_BOOT`.
-        const SYS_BOOT = 1 << linux::CAP_SYS_BOOT;
-
-        /// `CAP_SYS_NICE`.
-        const SYS_NICE = 1 << linux::CAP_SYS_NICE;
-
-        /// `CAP_SYS_RESOURCE`.
-        const SYS_RESOURCE = 1 << linux::CAP_SYS_RESOURCE;
-
-        /// `CAP_SYS_TIME`.
-        const SYS_TIME = 1 << linux::CAP_SYS_TIME;
-
-        /// `CAP_SYS_TTY_CONFIG`.
-        const SYS_TTY_CONFIG = 1 << linux::CAP_SYS_TTY_CONFIG;
-
-        /// `CAP_MKNOD`.
-        const MKNOD = 1 << linux::CAP_MKNOD;
-
-        /// `CAP_LEASE`.
-        const LEASE = 1 << linux::CAP_LEASE;
-
-        /// `CAP_AUDIT_WRITE`.
-        const AUDIT_WRITE = 1 << linux::CAP_AUDIT_WRITE;
-
-        /// `CAP_AUDIT_CONTROL`.
-        const AUDIT_CONTROL = 1 << linux::CAP_AUDIT_CONTROL;
-
-        /// `CAP_SETFCAP`.
-        const SETFCAP = 1 << linux::CAP_SETFCAP;
-
-        /// `CAP_MAC_OVERRIDE`.
-        const MAC_OVERRIDE = 1 << linux::CAP_MAC_OVERRIDE;
-
-        /// `CAP_MAC_ADMIN`.
-        const MAC_ADMIN = 1 << linux::CAP_MAC_ADMIN;
-
-        /// `CAP_SYSLOG`.
-        const SYSLOG = 1 << linux::CAP_SYSLOG;
-
-        /// `CAP_WAKE_ALARM`.
-        const WAKE_ALARM = 1 << linux::CAP_WAKE_ALARM;
-
-        /// `CAP_BLOCK_SUSPEND`.
-        const BLOCK_SUSPEND = 1 << linux::CAP_BLOCK_SUSPEND;
-
-        /// `CAP_AUDIT_READ`.
-        const AUDIT_READ = 1 << linux::CAP_AUDIT_READ;
-
-        /// `CAP_PERFMON`.
-        const PERFMON = 1 << linux::CAP_PERFMON;
-
-        /// `CAP_BPF`.
-        const BPF = 1 << linux::CAP_BPF;
-
-        /// `CAP_CHECKPOINT_RESTORE`.
-        const CHECKPOINT_RESTORE = 1 << linux::CAP_CHECKPOINT_RESTORE;
-    }
+        impl CapabilitySet {
+            /// Convert a string to a capability constant.
+            pub fn from_str(value: impl AsRef<str>) -> Option<Self> {
+                match value.as_ref() {
+                    $(
+                        stringify!($name) => Some(Self::$name),
+                    )*
+                    _ => None,
+                }
+            }
+        }
+    };
+    (@structure $(($name:ident, $constant:ident)),*) => {
+        bitflags::bitflags! {
+            /// Linux `CAP_*` constants.
+            #[repr(transparent)]
+            #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+            pub struct CapabilitySet: u64 {
+                $(
+                    /// `
+                    #[doc = stringify!($constant)]
+                    /// `.
+                    const $name = 1 << linux::$constant;
+                )*
+            }
+        }
+    };
 }
+
+capabilities![
+    (CHOWN, CAP_CHOWN),
+    (DAC_OVERRIDE, CAP_DAC_OVERRIDE),
+    (DAC_READ_SEARCH, CAP_DAC_READ_SEARCH),
+    (FOWNER, CAP_FOWNER),
+    (FSETID, CAP_FSETID),
+    (KILL, CAP_KILL),
+    (SETGID, CAP_SETGID),
+    (SETUID, CAP_SETUID),
+    (SETPCAP, CAP_SETPCAP),
+    (LINUX_IMMUTABLE, CAP_LINUX_IMMUTABLE),
+    (NET_BIND_SERVICE, CAP_NET_BIND_SERVICE),
+    (NET_BROADCAST, CAP_NET_BROADCAST),
+    (NET_ADMIN, CAP_NET_ADMIN),
+    (NET_RAW, CAP_NET_RAW),
+    (IPC_LOCK, CAP_IPC_LOCK),
+    (IPC_OWNER, CAP_IPC_OWNER),
+    (SYS_MODULE, CAP_SYS_MODULE),
+    (SYS_RAWIO, CAP_SYS_RAWIO),
+    (SYS_CHROOT, CAP_SYS_CHROOT),
+    (SYS_PTRACE, CAP_SYS_PTRACE),
+    (SYS_PACCT, CAP_SYS_PACCT),
+    (SYS_ADMIN, CAP_SYS_ADMIN),
+    (SYS_BOOT, CAP_SYS_BOOT),
+    (SYS_NICE, CAP_SYS_NICE),
+    (SYS_RESOURCE, CAP_SYS_RESOURCE),
+    (SYS_TIME, CAP_SYS_TIME),
+    (SYS_TTY_CONFIG, CAP_SYS_TTY_CONFIG),
+    (MKNOD, CAP_MKNOD),
+    (LEASE, CAP_LEASE),
+    (AUDIT_WRITE, CAP_AUDIT_WRITE),
+    (AUDIT_CONTROL, CAP_AUDIT_CONTROL),
+    (SETFCAP, CAP_SETFCAP),
+    (MAC_OVERRIDE, CAP_MAC_OVERRIDE),
+    (MAC_ADMIN, CAP_MAC_ADMIN),
+    (SYSLOG, CAP_SYSLOG),
+    (WAKE_ALARM, CAP_WAKE_ALARM),
+    (BLOCK_SUSPEND, CAP_BLOCK_SUSPEND),
+    (AUDIT_READ, CAP_AUDIT_READ),
+    (PERFMON, CAP_PERFMON),
+    (BPF, CAP_BPF),
+    (CHECKPOINT_RESTORE, CAP_CHECKPOINT_RESTORE)
+];

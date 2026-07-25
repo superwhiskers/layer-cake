@@ -2,13 +2,29 @@
 
 //! Command line wrapper for bubblebox.
 
+//TODO: remaining things for bwrap-parity:
+// - seccomp input
+// - overlay mounts (need implementation)
+// - maybe a minimal dev subset
+// - files materialized via fds
+// - selinux labels
+// - --bind-fd equivalents to what exists on the bwrap git
+// - fallible binds(?)
+// - args via fd
+// - namespace fds (requires implementation, would be less varied compared to
+//   bwrap)
+//TODO: substitutions for $uid, $gid in args when used in the zip bundle to
+//      allow binding directories like /run/$uid/...
+
 use anyhow::Context;
 use bubblebox::{
     command::Command,
     paths::Guest,
     platform::{
         cgroups::NullCgroups,
+        command::CommandExt,
         meowix::{
+            capabilities::CapabilitySet,
             ids::{Gid, Uid},
             mode::Mode,
         },
@@ -21,8 +37,9 @@ use bubblebox::{
     },
 };
 use std::{
+    collections::HashMap,
     convert::identity,
-    ffi::{self, OsString},
+    env, ffi,
     fs::File,
     io::Read,
     process::{self, ExitCode},
@@ -77,6 +94,19 @@ Session options:
 --new-session\tStart the sandboxed command in a new session
 --reuse-session\tKeep the sandboxed command in the current session
 
+Environment options:
+--set-env VAR VALUE\tSet an environment variable
+--inherit-env VAR\tInherit an environment variable. If the variable is not
+\t\t\tset, this option is ignored
+--unset-env VAR\t\tUnset an environment variable
+--cwd PATH\t\tSpawn the guest at PATH within the guest filesystem
+--arg0 ARGUMENT\t\tSet the first argument to the program to something
+\t\t\tother than the executable's path
+--cap-add CAP\t\tGrant capability CAP to the program
+--cap-drop CAP\t\tRemove capability CAP from the program
+--cap-drop all\t\tRemove all capabilities from the program. This is the
+\t\t\tdefault
+
 Filesystem options:
 --mode MODE\t\t\tSet the octal mode used by subsequent --directory
 \t\t\t\tand --tmpfs options. The initial mode is 0000.
@@ -111,8 +141,7 @@ command unchanged."
 
 /// Interprets the [`Policy`] from the given [`lexopt::Parser`].
 ///
-/// Returns both the interpreted [`Policy`], the path to the command as an
-/// [`OsString`], and a vector of arguments to the command.
+/// Returns both the interpreted [`Policy`] and the interpreted [`Command`].
 ///
 /// # Errors
 ///
@@ -121,19 +150,22 @@ command unchanged."
 fn interpret_policy<'a>(
     mut parser: lexopt::Parser,
     mut archive: Option<ZipArchive<File>>,
-) -> anyhow::Result<(Policy<'a, NullCgroups>, OsString, Vec<OsString>)> {
+) -> anyhow::Result<(Policy<'a, NullCgroups>, Command)> {
     use lexopt::prelude::*;
 
     let name = parser.bin_name().unwrap_or("bbx").to_owned();
 
     let mut policy = Policy::default();
     let mut command = None;
-    let mut arguments = Vec::new();
 
+    let mut environment = HashMap::new();
     let mut last_seconds_offset = None;
     let mut last_nanoseconds_offset = None;
     let mut uid = None;
     let mut gid = None;
+    let mut cwd = None;
+    let mut arg0 = None;
+    let mut capability_set = CapabilitySet::empty();
     let mut mode = Mode::empty();
     while let Some(arg) = parser.next()? {
         match arg {
@@ -405,27 +437,74 @@ fn interpret_policy<'a>(
                     tree.mount(Mount::tmpfs(size, mode), guest_path)
                 })?;
             }
+            Long("set-env") => {
+                drop(environment.insert(parser.value()?, parser.value()?));
+            }
+            Long("inherit-env") => {
+                let var = parser.value()?;
+                if let Some(value) = env::var_os(&var) {
+                    drop(environment.insert(var, value));
+                }
+            }
+            Long("unset-env") => {
+                drop(environment.remove(&parser.value()?));
+            }
+            Long("cwd") => {
+                cwd = Some(Guest::new(parser.value()?)?);
+            }
+            Long("arg0") => {
+                arg0 = Some(parser.value()?);
+            }
+            Long("cap-add") => {
+                capability_set |= CapabilitySet::from_str(
+                    parser.value()?.string()?,
+                )
+                .ok_or(anyhow::format_err!("capability was not valid"))?;
+            }
+            Long("cap-drop") => {
+                let raw_cap = parser.value()?.string()?;
+
+                if raw_cap == "all" {
+                    capability_set = CapabilitySet::empty();
+                } else {
+                    capability_set ^= CapabilitySet::from_str(raw_cap).ok_or(
+                        anyhow::format_err!("capability was not valid"),
+                    )?;
+                }
+            }
             Value(v) => {
-                command = Some(v);
-                arguments.extend(parser.raw_args()?);
+                let mut final_command = Command::new(v)?
+                    .args(parser.raw_args()?)?
+                    .envs(environment)?;
+
+                if let Some(cwd) = cwd {
+                    final_command = final_command.current_dir(cwd);
+                }
+
+                if let Some(arg0) = arg0 {
+                    final_command = final_command.arg0(arg0)?;
+                }
+
+                command = Some(final_command);
                 break;
             }
             _ => return Err(arg.unexpected().into()),
         }
     }
 
-    policy = policy.namespace(|namespace| {
-        namespace.user_namespace(|user| user.simple_mapping(uid, gid))
-    });
+    policy = policy
+        .namespace(|namespace| {
+            namespace.user_namespace(|user| user.simple_mapping(uid, gid))
+        })
+        .set_target_capabilities(capability_set);
 
     let command =
         command.ok_or(anyhow::format_err!("missing command to execute"))?;
-    Ok((policy, command, arguments))
+    Ok((policy, command))
 }
 
 fn main() -> anyhow::Result<ExitCode> {
-    //FIXME: provide arguments to the command
-    let (policy, command, arguments) = match File::open("/proc/self/exe")
+    let (policy, command) = match File::open("/proc/self/exe")
         .map_err::<anyhow::Error, _>(Into::into)
         .and_then(|file| Ok(ZipArchive::new(file)?))
         .and_then(|mut archive| {
@@ -443,7 +522,7 @@ fn main() -> anyhow::Result<ExitCode> {
         Err(_) => interpret_policy(lexopt::Parser::from_env(), None)?,
     };
 
-    let guest = policy.spawn(&Command::new(command)?.args(arguments)?)?;
+    let guest = policy.spawn(&command)?;
     let result = guest.wait()?;
 
     Ok(ExitCode::from(if let Some(code) = result.code() {

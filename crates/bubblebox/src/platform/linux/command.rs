@@ -19,20 +19,29 @@ use meowix::{
 use std::{
     collections::HashMap,
     ffi,
-    ffi::{CString, OsStr},
-    fmt,
-    os::unix::{ffi::OsStrExt, process::ExitStatusExt},
+    ffi::{CString, OsStr, OsString},
+    fmt, mem,
+    os::unix::{
+        ffi::{OsStrExt, OsStringExt},
+        process::ExitStatusExt,
+    },
     process::ExitStatus,
     ptr,
 };
 
 use super::errors::{Command as CommandError, Error, ResultSyscallExt, Tag};
+use crate::{
+    command::Command, errors::Error as CrateError, paths::Guest, sealed::Sealed,
+};
 
 /// Platform implementation of the command structure.
 #[derive(Debug)]
 pub(crate) struct CommandInner {
     /// Environment to pass to the program.
-    pub(super) environment: HashMap<CString, CString>,
+    ///
+    /// This is not a mapping of environment variables to values. This is a
+    /// mapping of environment variables to prepared `ENV=value` strings.
+    pub(super) environment: HashMap<OsString, CString>,
 
     /// Arguments to pass to the program.
     pub(super) arguments: Vec<*const ffi::c_char>,
@@ -41,13 +50,13 @@ pub(crate) struct CommandInner {
     pub(super) program: CString,
 
     /// Working directory of the process within the sandbox.
-    pub(super) working_directory: CString,
+    pub(super) working_directory: Option<Guest>,
     //FIXME: add optional stdin, stdout, stderr
 }
 
 impl CommandInner {
-    /// Construct a new command for launching the program at the path `program`
-    /// within the sandbox.
+    /// Construct a new command for launching the guest process at the path
+    /// `program` within the sandbox.
     ///
     /// This has the following defaults:
     ///
@@ -58,38 +67,61 @@ impl CommandInner {
     /// # Errors
     ///
     /// This method errors if the provided [`OsStr`] was not a valid C string.
-    pub fn new(program: impl AsRef<OsStr>) -> Result<Self, Error> {
+    pub(crate) fn new(program: impl AsRef<OsStr>) -> Result<Self, Error> {
         let program = CString::new(program.as_ref().as_bytes().to_owned())
             .map_err(Tag::tag_with::<CommandError>)?;
         Ok(Self {
             environment: HashMap::new(),
             arguments: vec![program.clone().into_raw(), ptr::null()],
             program,
-            working_directory: c"/".to_owned(),
+            working_directory: None,
         })
     }
 
-    /// Add an argument to the program.
+    /// Set the first argument given to the program to something other than the
+    /// executable's path.
+    ///
+    /// # Errors
+    ///
+    /// This method erors if the provided [`OsStr`] was not a valid C string.
+    pub(crate) fn arg0(mut self, arg: impl AsRef<OsStr>) -> Result<Self, Error> {
+        let mut arg = CString::new(arg.as_ref().as_bytes().to_owned())
+            .map_err(Tag::tag_with::<CommandError>)?
+            .into_raw() as *const _;
+
+        //NOTE: this can't panic so we don't need to worry about unintentional
+        //      unwinding here and leaking the raw c string we create above
+        mem::swap(&mut self.arguments[0], &mut arg);
+
+        //SAFETY: these are guaranteed to be valid by invariants on the
+        //        structure
+        drop(unsafe { CString::from_raw(arg as *mut _) });
+
+        Ok(self)
+    }
+
+    /// Add an argument to the guest process.
     ///
     /// Only one may be passed per call.
     ///
     /// # Errors
     ///
     /// This method errors if the provided [`OsStr`] was not a valid C string.
-    pub fn arg(mut self, arg: impl AsRef<OsStr>) -> Result<Self, Error> {
+    pub(crate) fn arg(mut self, arg: impl AsRef<OsStr>) -> Result<Self, Error> {
         let arg = CString::new(arg.as_ref().as_bytes().to_owned())
             .map_err(Tag::tag_with::<CommandError>)?;
-        self.arguments
-            .insert(self.arguments.len() - 1, arg.into_raw());
+        let position = self.arguments.len() - 1;
+        self.arguments.push(ptr::null());
+        self.arguments[position] = arg.into_raw();
         Ok(self)
     }
 
-    /// Add multiple arguments to the program.
+    /// Add multiple arguments to the guest process.
     ///
     /// # Errors
     ///
     /// This method errors if the provided [`OsStr`] was not a valid C string.
-    pub fn args(
+    pub(crate) fn args(
         mut self,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> Result<Self, Error> {
@@ -100,9 +132,56 @@ impl CommandInner {
         Ok(self)
     }
 
-    //FIXME: add methods for the rest. unsure how to do arg stuff as the
-    //       lifetime needs to be tied. probably a phantomdata or something to
-    //       hold and unify the lifetime
+    /// Add or update an environment variable passed to the guest process.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the provided [`OsStr`]s do not make a valid C
+    /// string.
+    pub(crate) fn env(
+        mut self,
+        key: impl AsRef<OsStr>,
+        value: impl AsRef<OsStr>,
+    ) -> Result<Self, Error> {
+        let mut env = key.as_ref().to_owned();
+        env.reserve(value.as_ref().len() + 2);
+        env.push("=");
+        env.push(&value);
+
+        let env = CString::new(env.into_vec())
+            .map_err(Tag::tag_with::<CommandError>)?;
+
+        drop(self.environment.insert(key.as_ref().to_owned(), env));
+        Ok(self)
+    }
+
+    /// Add or update several environment variables passed to the guest process.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the provided [`OsStr`]s are not valid C strings.
+    pub(crate) fn envs(
+        mut self,
+        vars: impl IntoIterator<Item = (impl AsRef<OsStr>, impl AsRef<OsStr>)>,
+    ) -> Result<Self, Error> {
+        for (key, value) in vars {
+            self = self.env(key, value)?;
+        }
+
+        Ok(self)
+    }
+
+    /// Remove an explicitly set environment variable.
+    pub(crate) fn env_remove(mut self, key: impl AsRef<OsStr>) -> Self {
+        drop(self.environment.remove(key.as_ref()));
+        self
+    }
+
+    /// Set the working directory of the guest process.
+    pub(crate) fn current_dir(mut self, dir: Guest) -> Self {
+        self.working_directory = Some(dir);
+        self
+    }
 }
 
 impl Drop for CommandInner {
@@ -116,6 +195,25 @@ impl Drop for CommandInner {
             //        and thus know we possess ownership of them
             drop(unsafe { CString::from_raw(arg as *mut _) });
         }
+    }
+}
+
+/// Extension trait for [`Command`] providing Linux-specific features.
+pub trait CommandExt: Sealed + Sized {
+    /// Set the first argument given to the program to something other than the
+    /// executable's path.
+    ///
+    /// # Errors
+    ///
+    /// This method erors if the provided [`OsStr`] was not a valid C string.
+    fn arg0(self, arg: impl AsRef<OsStr>) -> Result<Self, CrateError>;
+}
+
+impl CommandExt for Command {
+    fn arg0(self, arg: impl AsRef<OsStr>) -> Result<Self, CrateError> {
+        Ok(Self {
+            inner: self.inner.arg0(arg)?,
+        })
     }
 }
 

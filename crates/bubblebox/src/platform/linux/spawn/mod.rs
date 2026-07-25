@@ -487,12 +487,11 @@ where
 
     let guest_proc_fs_fd = syscalls::fsopen(c"proc", linux::FSOPEN_CLOEXEC)?;
 
-    //NOTE: we set these to increase the chance we pass the
-    //      `mount_too_revealing` check. the latter isn't important for it,
-    //      but we set it anyway as we don't need more than that
+    //NOTE: there's really no point to setting this but we do it anyway in the
+    //      unlikely event this leaks into the guest. we unfortunately can't
+    //      blanket set subset=pid due to needing the full proc view to disable
+    //      new user namespaces
     //TODO: set nosuid,nodev,noexec too just in case
-    //FIXME: we can't set this and disable userns?? hmm
-    //syscalls::fsconfig_set_string(&guest_proc_fs_fd, c"subset", c"pid")?;
     syscalls::fsconfig_set_string(
         &guest_proc_fs_fd,
         c"hidepid",
@@ -600,6 +599,7 @@ where
     //       non-synthetic mount, we should open a fd to the destination and do
     //       nothing else. this would reduce the amount of redundant checks we
     //       perform
+    //TODO: we make a lot of statx calls here. try to remove some of these
 
     for resolved in resolved_mappings.iter() {
         match resolved {

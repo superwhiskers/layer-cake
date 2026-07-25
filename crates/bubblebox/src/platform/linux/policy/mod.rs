@@ -9,14 +9,18 @@
 //      more powerful)
 //TODO: try to get `Clone` back on here somehow
 
-use meowix::{capabilities::CapabilitySet, syscalls, util::Cwd};
-use std::ptr;
+use meowix::{
+    capabilities::CapabilitySet,
+    syscalls,
+    util::{Cwd, PATH_MAX},
+};
+use std::{ptr, slice};
 
 use super::{
     cgroups::{self, Cgroups, NullCgroups, OwnedFdCgroups},
     command::GuestInner,
     errors::Error,
-    spawn::{self, SpawnAction},
+    spawn::{self, SpawnAction, errors::PostSpawnGuest as PostSpawnGuestError},
 };
 use crate::command::{Command, Guest};
 use errors::Policy as PolicyError;
@@ -28,7 +32,7 @@ use namespace::Namespaces;
 use seccompiler::SeccompFilter;
 
 #[cfg(feature = "systemd-cgroups")]
-use super::cgroups::{SystemdState, SystemdCgroups};
+use super::cgroups::{SystemdCgroups, SystemdState};
 
 pub mod errors;
 pub mod fd;
@@ -182,6 +186,19 @@ where
         command: &Command,
         cgroups_state: CgroupsBackend::State,
     ) -> Result<Guest<'_>, Error> {
+        let mut prepared_envs =
+            Vec::with_capacity(command.inner.environment.len() + 1);
+
+        for mapping in command.inner.environment.values() {
+            prepared_envs.push(mapping.as_ptr());
+        }
+        prepared_envs.push(ptr::null());
+
+        //TODO: add wrapper that removes the need to do this slice raw parts
+        //      conversion. lying about the 'static lifetime of the slice is a
+        //      little unclean
+        let (envs, len) = (prepared_envs.as_ptr(), prepared_envs.len());
+
         //SAFETY: the only thing the callback does is change the working
         //        directory and return the spawn action. argv and envp
         //        are null-terminated due to our implementation of
@@ -190,18 +207,28 @@ where
             spawn::clone_into(
                 self,
                 move || {
-                    syscalls::chdir(
-                        command.inner.working_directory.as_c_str(),
-                    )?;
+                    if let Some(ref working_directory) =
+                        command.inner.working_directory
+                    {
+                        working_directory
+                            .inner
+                            .with_c_str::<{ PATH_MAX }, _, PostSpawnGuestError>(
+                                |working_directory| {
+                                    syscalls::chdir(working_directory)?;
+                                    Ok(())
+                                },
+                            )?;
+                    }
 
                     Ok(SpawnAction::Exec {
                         //NOTE: there's no way to get an fd in the sandbox
                         //      prior to making it
                         dirfd: Cwd,
                         path: command.inner.program.as_c_str(),
-                        //FIXME: actually pass all of these in
                         argv: &command.inner.arguments,
-                        envp: [ptr::null()],
+                        //SAFETY: the fork ensures the environment hashmap
+                        //        lives for the duration of the guest pre-exec
+                        envp: slice::from_raw_parts::<'static, _>(envs, len),
                         flags: 0,
                     })
                 },

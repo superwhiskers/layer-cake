@@ -15,7 +15,7 @@
 //      actually need newlines at the end, if any, and clean up those that don't
 
 pub mod cgroups;
-pub(crate) mod command;
+pub mod command;
 pub mod errors;
 pub mod mounts;
 pub mod paths;

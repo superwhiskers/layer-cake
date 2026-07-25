@@ -14,3 +14,11 @@ pub mod command;
 pub mod errors;
 pub mod paths;
 pub mod platform;
+
+pub(crate) mod sealed {
+    //! Module containing the trait used to prevent external implementations of
+    //! some public traits.
+
+    /// Trait used to prevent external implementations of some public traits.
+    pub trait Sealed {}
+}

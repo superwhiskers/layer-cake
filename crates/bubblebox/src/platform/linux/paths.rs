@@ -482,7 +482,7 @@ impl GuestInner {
         E: From<ffi::FromBytesWithNulError> + From<CStrBufferTooSmall>,
     {
         //TODO: as stated in the meowix code, this could probably use
-        // maybeuninit
+        //      maybeuninit
         let mut buffer = [0; N];
 
         let parent_dir_len = self.parent_dir.count_bytes();

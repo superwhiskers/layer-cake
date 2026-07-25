@@ -6,7 +6,9 @@ use std::{ffi::OsStr, process::ExitStatus};
 
 use crate::{
     errors::Error,
+    paths::Guest as GuestPath,
     platform::command::{CommandInner, GuestInner},
+    sealed::Sealed,
 };
 
 /// Sandbox managed by a supervisor process.
@@ -21,8 +23,8 @@ pub struct Command {
 }
 
 impl Command {
-    /// Construct a new command for launching the program at the path `program`
-    /// within the sandbox.
+    /// Construct a new command for launching the guest process at the path
+    /// `program` within the sandbox.
     ///
     /// This has the following defauts:
     ///
@@ -39,7 +41,7 @@ impl Command {
         })
     }
 
-    /// Add an argument to the program.
+    /// Add an argument to the guest process.
     ///
     /// Only one may be passed per call.
     ///
@@ -52,7 +54,7 @@ impl Command {
         })
     }
 
-    /// Add multiple arguments to the program.
+    /// Add multiple arguments to the guest process.
     ///
     /// # Errors
     ///
@@ -65,7 +67,52 @@ impl Command {
             inner: self.inner.args(args)?,
         })
     }
+
+    /// Add or update an environment variable passed to the guest process.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the underlying platform implementation errors.
+    pub fn env(
+        self,
+        key: impl AsRef<OsStr>,
+        value: impl AsRef<OsStr>,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            inner: self.inner.env(key, value)?,
+        })
+    }
+
+    /// Add or update several environment variables passed to the guest process.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the underlying platform implementation errors.
+    pub fn envs(
+        self,
+        vars: impl IntoIterator<Item = (impl AsRef<OsStr>, impl AsRef<OsStr>)>,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            inner: self.inner.envs(vars)?,
+        })
+    }
+
+    /// Remove an explicitly set environment variable.
+    pub fn env_remove(self, key: impl AsRef<OsStr>) -> Self {
+        Self {
+            inner: self.inner.env_remove(key),
+        }
+    }
+
+    /// Set the working directory of the guest process.
+    pub fn current_dir(self, dir: GuestPath) -> Self {
+        Self {
+            inner: self.inner.current_dir(dir),
+        }
+    }
 }
+
+impl Sealed for Command {}
 
 /// Sandboxed process.
 #[derive(Debug)]

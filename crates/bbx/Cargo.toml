@@ -17,7 +17,7 @@ bubblebox.workspace = true
 [dependencies.zip]
 version = "8"
 default-features = false
-features = ["bzip2", "deflate", "deflate64", "lzma", "ppmd", "xz", "zstd"]
+features = ["deflate"]
 
 [lints]
 workspace = true
