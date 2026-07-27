@@ -6,6 +6,7 @@
 #![feature(pattern_type_macro)]
 #![feature(pattern_type_range_trait)]
 #![feature(const_trait_impl)]
+#![feature(maybe_uninit_array_assume_init)]
 //NOTE: required for the niche optimization in `fd`
 #![allow(internal_features)]
 #![feature(pattern_types)]

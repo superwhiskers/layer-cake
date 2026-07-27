@@ -6,7 +6,8 @@ use core::{error, fmt};
 use meowix::{
     errno::Errno,
     errors::{
-        CStrBufferTooSmall, IncompleteWrite, Netlink, StringRead, SyscallError,
+        CStrBufferTooSmall, IncompleteWrite, Netlink, PartialTransfer,
+        StringRead, SyscallError,
     },
 };
 
@@ -67,8 +68,8 @@ pub enum PostSpawnHost {
     #[cfg(feature = "systemd-cgroups")]
     FromBytesWithNulError(std::ffi::FromBytesWithNulError),
 
-    /// Casting the child error information failed.
-    PodCastError(bytemuck::PodCastError),
+    /// Transfer that should have been fixed size was incomplete.
+    PartialTransfer(PartialTransfer),
 
     /// A write was incomplete.
     IncompleteWrite,
@@ -94,8 +95,11 @@ impl fmt::Display for PostSpawnHost {
             Self::FromBytesWithNulError(e) => {
                 write!(f, "C string conversion error: {e}")
             }
-            Self::PodCastError(e) => {
-                write!(f, "casting of child error information failed: {e}")
+            Self::PartialTransfer(e) => {
+                write!(
+                    f,
+                    "transfer that should have been fixed size was incomplete: {e}"
+                )
             }
             Self::IncompleteWrite => f.write_str("a write was incomplete"),
             Self::InvalidCgroupsState => {
@@ -135,9 +139,9 @@ impl From<std::ffi::FromBytesWithNulError> for PostSpawnHost {
     }
 }
 
-impl From<bytemuck::PodCastError> for PostSpawnHost {
-    fn from(error: bytemuck::PodCastError) -> Self {
-        Self::PodCastError(error)
+impl From<PartialTransfer> for PostSpawnHost {
+    fn from(error: PartialTransfer) -> Self {
+        Self::PartialTransfer(error)
     }
 }
 
@@ -294,18 +298,21 @@ impl From<PostSpawnGuestOther> for PostSpawnGuest {
     }
 }
 
-impl From<PostSpawnGuestWire> for PostSpawnGuest {
+impl From<PostSpawnGuestWire> for Result<(), PostSpawnGuest> {
     fn from(
         PostSpawnGuestWire { tag, subtag, value }: PostSpawnGuestWire,
     ) -> Self {
         match tag {
-            v if v == u8::MAX => PostSpawnGuest::Syscall(SyscallError::new(
-                subtag.into(),
-                Errno::from_raw_os_error(value),
-            )),
+            v if v == u8::MAX => Ok(()),
             v if v == u8::MAX - 1 => {
+                Err(PostSpawnGuest::Syscall(SyscallError::new(
+                    subtag.into(),
+                    Errno::from_raw_os_error(value),
+                )))
+            }
+            v if v == u8::MAX - 2 => {
                 if subtag == 0 {
-                    PostSpawnGuest::Netlink(match value {
+                    Err(PostSpawnGuest::Netlink(match value {
                         1 => Netlink::MalformedHeader,
                         2 => Netlink::TruncatedMessage,
                         3 => Netlink::SequenceMismatch,
@@ -313,26 +320,26 @@ impl From<PostSpawnGuestWire> for PostSpawnGuest {
                         5 => Netlink::BufferTooSmall,
                         6 => Netlink::IntegerOverflow,
                         7 => Netlink::IncompleteWrite,
-                        _ => return PostSpawnGuest::InvalidWireFormat,
-                    })
+                        _ => return Err(PostSpawnGuest::InvalidWireFormat),
+                    }))
                 } else if subtag == u8::MAX {
-                    PostSpawnGuest::Netlink(Netlink::Errno(
+                    Err(PostSpawnGuest::Netlink(Netlink::Errno(
                         Errno::from_raw_os_error(value),
-                    ))
+                    )))
                 } else {
-                    PostSpawnGuest::Netlink(Netlink::Syscall(
+                    Err(PostSpawnGuest::Netlink(Netlink::Syscall(
                         SyscallError::new(
                             subtag.into(),
                             Errno::from_raw_os_error(value),
                         ),
-                    ))
+                    )))
                 }
             }
-            v if v == u8::MAX - 2 => PostSpawnGuest::IncompleteWrite,
-            v if v == u8::MAX - 3 => PostSpawnGuest::CStrBufferTooSmall,
-            v if v == u8::MAX - 4 => PostSpawnGuest::FromBytesWithNulError,
+            v if v == u8::MAX - 3 => Err(PostSpawnGuest::IncompleteWrite),
+            v if v == u8::MAX - 4 => Err(PostSpawnGuest::CStrBufferTooSmall),
+            v if v == u8::MAX - 5 => Err(PostSpawnGuest::FromBytesWithNulError),
             //NOTE: indicates [`PostSpawnGuestOther`]
-            v => v.into(),
+            v => Err(v.into()),
         }
     }
 }

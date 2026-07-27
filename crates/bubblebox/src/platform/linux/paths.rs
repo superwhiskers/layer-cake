@@ -5,7 +5,8 @@
 //TODO: add constructors for host files that take in file descriptors
 //TODO: impl borrow for this
 //TODO: consider giving it its own error
-//TODO: accept non-meowix fds as dirfds
+//TODO: write an fd type abstraction so we can accept non-meowix fds where
+//      reasonable. would need to cover bare fd input + [`AtFd`].
 
 use linux_raw_sys::general as linux;
 use meowix::{
@@ -322,6 +323,32 @@ impl HostDirectory {
     /// Convert this [`HostDirectory`] into its underlying [`OwnedFd`].
     pub fn into_fd(self) -> OwnedFd {
         self.0
+    }
+
+    /// Create a new [`HostDirectory`] from an arbitrary [`OwnedFd`].
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the specified fd is not a path file descriptor
+    /// representing a directory, or if calling `statx(2)` fails.
+    pub fn new(fd: OwnedFd) -> Result<Self, Error> {
+        if is_directory(fd.as_fd()).wrap_error::<PolicyError>()? {
+            //SAFETY: we just verified that it's a directory
+            Ok(unsafe { Self::new_unchecked(fd) })
+        } else {
+            Err(PolicyError::NotADirectory.into())
+        }
+    }
+
+    /// Create a new [`HostDirectory`] from an arbitrary [`OwnedFd`], without
+    /// checking that it is to a directory.
+    ///
+    /// # Safety
+    ///
+    /// The provided [`OwnedFd`] must be a path file descriptor representing a
+    /// directory.
+    pub unsafe fn new_unchecked(fd: OwnedFd) -> Self {
+        Self(fd)
     }
 
     /// Creates a new [`HostDirectory`] from the given [`Path`].

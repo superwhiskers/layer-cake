@@ -41,7 +41,6 @@ pub unsafe fn apply_file_descriptor_policy<'a>(
             //SAFETY: we are only applying the close-on-exec flag to these file
             //        descriptors
             unsafe {
-                //TODO: replace with custom syscall wrapper
                 syscalls::close_range(
                     range_start,
                     fd.saturating_sub(1),

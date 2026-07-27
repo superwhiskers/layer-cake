@@ -18,7 +18,6 @@ use linux_raw_sys::general as linux;
 use meowix::{
     capabilities::{self, CapabilitySet, CapabilitySets},
     errno::Errno,
-    errors::SyscallError,
     fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd},
     ids::{Gid, Pid, Uid},
     mode::Mode,
@@ -165,7 +164,6 @@ where
     let namespace_fd_scratch_space =
         Vec::with_capacity(policy.mount_tree.0.len());
 
-    //FIXME: send success over this too. work out how to do this
     let (host_pipe, guest_pipe) = syscalls::pipe2(linux::O_CLOEXEC as i32)
         .wrap_error::<PreSpawnError>()?;
 
@@ -279,12 +277,13 @@ where
         host_gid,
     ) {
         Ok(action) => {
-            //FIXME: update wire protocol, signal success to host, indicate
-            //       we're about to perform the spawn action
+            let wire_success: PostSpawnGuestWire = Ok(()).into();
+
+            //NOTE: if this errors we can't really do anything, just continue
+            let _ = guest_pipe.write_all(bytemuck::bytes_of(&wire_success));
 
             match action {
                 SpawnAction::Exit(code) => {
-                    drop(guest_pipe);
                     syscalls::exit(code);
                 }
                 SpawnAction::Exec {
@@ -294,41 +293,31 @@ where
                     envp,
                     flags,
                 } => {
-                    //FIXME: don't ignore the error
-                    //SAFETY: this executes in the guest post-clone
-                    let _result = unsafe {
-                        fd::apply_file_descriptor_policy(
-                            &policy.file_descriptors.0,
+                    let wire_error: PostSpawnGuestWire = try {
+                        //SAFETY: this executes in the guest post-clone
+                        unsafe {
+                            fd::apply_file_descriptor_policy(
+                                &policy.file_descriptors.0,
+                            )
+                        }?;
+
+                        capabilities::set_ambient_capabilities(
+                            policy.target_capabilities,
                         )
-                    };
+                        .map_err(Into::into)?;
 
-                    //FIXME: don't ignore the error
-                    let _ = capabilities::set_ambient_capabilities(
-                        policy.target_capabilities,
-                    );
-
-                    //SAFETY: caller asserts the closure assembled
-                    //        null-terminated arrays for argv, envp
-                    let Err(error) = unsafe {
-                        syscalls::execveat(dirfd, path, argv, envp, flags)
-                    };
-
-                    //FIXME: temporary. change once we have success signals /
-                    //       etc
-                    let wire_error: PostSpawnGuestWire =
-                        <SyscallError as Into<PostSpawnGuestError>>::into(
-                            error,
-                        )
-                        .into();
-
-                    if guest_pipe
-                        .write_all(bytemuck::bytes_of(&wire_error))
-                        .is_err()
-                    {
-                        syscalls::exit(-2);
+                        //SAFETY: caller asserts the closure assembled
+                        //        null-terminated arrays for argv, envp
+                        unsafe {
+                            syscalls::execveat(dirfd, path, argv, envp, flags)
+                        }
+                        .map_err(Into::into)?;
                     }
+                    .into();
 
-                    drop(guest_pipe);
+                    //NOTE: we can't do anything here
+                    let _ =
+                        guest_pipe.write_all(bytemuck::bytes_of(&wire_error));
 
                     syscalls::exit(-1);
                 }
@@ -341,24 +330,15 @@ where
                     //       supervisor, even if those given to the supervised
                     //       processes
 
-                    drop(guest_pipe);
-
-                    syscalls::exit(-3);
+                    syscalls::exit(-1);
                 }
             }
         }
         Err(error) => {
-            let wire_error: PostSpawnGuestWire = error.into();
+            let wire_error: PostSpawnGuestWire = Err(error).into();
 
-            if guest_pipe
-                .write_all(bytemuck::bytes_of(&wire_error))
-                .is_err()
-            {
-                //TODO: document this as a means of determining the error
-                syscalls::exit(-2);
-            }
-
-            drop(guest_pipe);
+            //NOTE: we can't do anything here anyway
+            let _ = guest_pipe.write_all(bytemuck::bytes_of(&wire_error));
 
             syscalls::exit(-1);
         }
@@ -384,24 +364,40 @@ where
         .cgroups
         .host_post_clone_hook(cgroups_state, guest_pid)?;
 
-    //TODO: use read_array here once we have serialization of an "ok"
-    //      status working
-    let mut potential_error = Vec::new();
-    let _ = host_pipe
-        .read_to_end(&mut potential_error)
-        .map_err(PostSpawnHostError::Syscall)?;
+    //NOTE: we first check if the guest has errored during setup
 
-    if potential_error.is_empty() {
+    let potential_setup_error = host_pipe
+        .read_array::<{ size_of::<PostSpawnGuestWire>() }>()
+        .map_err(PostSpawnHostError::PartialTransfer)?;
+
+    <PostSpawnGuestWire as Into<Result<(), PostSpawnGuestError>>>::into(
+        bytemuck::must_cast::<_, PostSpawnGuestWire>(potential_setup_error),
+    )?;
+
+    //NOTE: we then check one more time, ignoring end of file (indicated by
+    //      empty read) because there's no way to send an "exec success" to
+    //      the host after `execveat(2)` or `exit(2)`
+
+    let potential_exec_error =
+        host_pipe.read_array::<{ size_of::<PostSpawnGuestWire>() }>();
+
+    if let Err(e) = potential_exec_error
+        && e.transferred == 0
+        && e.error.is_none()
+    {
+        //NOTE: this is the success case. no error was transferred, the read
+        //      succeeded, nothing was read prior to cut-off
         return Ok(());
     }
 
-    Err(<PostSpawnGuestWire as Into<PostSpawnGuestError>>::into(
-        *bytemuck::try_from_bytes::<PostSpawnGuestWire>(
-            potential_error.as_slice(),
-        )
-        .map_err(PostSpawnHostError::PodCastError)?,
-    )
-    .into())
+    let potential_exec_error =
+        potential_exec_error.map_err(PostSpawnHostError::PartialTransfer)?;
+
+    <PostSpawnGuestWire as Into<Result<(), PostSpawnGuestError>>>::into(
+        bytemuck::must_cast::<_, PostSpawnGuestWire>(potential_exec_error),
+    )?;
+
+    Ok(())
 }
 
 /// Helper method for `clone_into`.
@@ -939,9 +935,5 @@ where
         inheritable: policy.target_capabilities,
     })?;
 
-    //TODO: somewhere here or before performing the callback's suggested
-    //      action, we should unset syscalls::set_parent_thread_death_signal
-    //      because at this low level of an interface, there's no
-    //      "guarantee" we can enforce it
     guest_callback()
 }

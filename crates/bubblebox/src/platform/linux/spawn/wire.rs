@@ -22,15 +22,20 @@ pub struct PostSpawnGuestWire {
     pub(super) value: i32,
 }
 
-impl From<PostSpawnGuest> for PostSpawnGuestWire {
-    fn from(error: PostSpawnGuest) -> Self {
-        match error {
-            PostSpawnGuest::Syscall(error) => PostSpawnGuestWire {
+impl From<Result<(), PostSpawnGuest>> for PostSpawnGuestWire {
+    fn from(value: Result<(), PostSpawnGuest>) -> Self {
+        match value {
+            Ok(()) => PostSpawnGuestWire {
                 tag: u8::MAX,
+                subtag: 0,
+                value: 0,
+            },
+            Err(PostSpawnGuest::Syscall(error)) => PostSpawnGuestWire {
+                tag: u8::MAX - 1,
                 subtag: error.syscall() as u8,
                 value: error.error().raw_os_error(),
             },
-            PostSpawnGuest::Netlink(netlink_error) => {
+            Err(PostSpawnGuest::Netlink(netlink_error)) => {
                 let (subtag, value) = match netlink_error {
                     Netlink::MalformedHeader => (0, 1),
                     Netlink::TruncatedMessage => (0, 2),
@@ -49,34 +54,34 @@ impl From<PostSpawnGuest> for PostSpawnGuestWire {
                 };
 
                 PostSpawnGuestWire {
-                    tag: u8::MAX - 1,
+                    tag: u8::MAX - 2,
                     subtag,
                     value,
                 }
             }
-            PostSpawnGuest::IncompleteWrite => PostSpawnGuestWire {
-                tag: u8::MAX - 2,
-                subtag: 0,
-                value: 0,
-            },
-            PostSpawnGuest::CStrBufferTooSmall => PostSpawnGuestWire {
+            Err(PostSpawnGuest::IncompleteWrite) => PostSpawnGuestWire {
                 tag: u8::MAX - 3,
                 subtag: 0,
                 value: 0,
             },
-            PostSpawnGuest::FromBytesWithNulError => PostSpawnGuestWire {
+            Err(PostSpawnGuest::CStrBufferTooSmall) => PostSpawnGuestWire {
                 tag: u8::MAX - 4,
+                subtag: 0,
+                value: 0,
+            },
+            Err(PostSpawnGuest::FromBytesWithNulError) => PostSpawnGuestWire {
+                tag: u8::MAX - 5,
                 subtag: 0,
                 value: 0,
             },
             //NOTE: we don't need to handle this in the parse step because any
             //      unrecognized tag gets parsed as this
-            PostSpawnGuest::InvalidWireFormat => PostSpawnGuestWire {
-                tag: u8::MAX - 5,
+            Err(PostSpawnGuest::InvalidWireFormat) => PostSpawnGuestWire {
+                tag: u8::MAX - 6,
                 subtag: 0,
                 value: 0,
             },
-            PostSpawnGuest::Other(e) => {
+            Err(PostSpawnGuest::Other(e)) => {
                 //NOTE: this is okay as long as we don't come into contact with
                 //      the other end
                 PostSpawnGuestWire {

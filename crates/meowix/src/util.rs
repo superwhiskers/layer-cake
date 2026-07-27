@@ -152,6 +152,44 @@ pub trait FdReadWriteExt: AsFd {
         }
     }
 
+    /// Read a fixed array of bytes from the file descriptor.
+    ///
+    /// This will read until the buffer is filled.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if `read(2)` fails or if not enough bytes were read
+    /// to fill the buffer.
+    fn read_array<const N: usize>(
+        &self,
+    ) -> Result<[u8; N], PartialTransferError> {
+        let mut buf = [const { MaybeUninit::uninit() }; N];
+        let mut i = 0usize;
+        while let Some(segment) = buf.get_mut(i..)
+            && !segment.is_empty()
+        {
+            match syscalls::read_uninit(self, segment) {
+                Ok(0) => {
+                    return Err(PartialTransferError {
+                        transferred: i,
+                        error: None,
+                    });
+                }
+                Ok(n) => i += n,
+                Err(e) if e.error() == Errno::INTR => continue,
+                Err(err) => {
+                    return Err(PartialTransferError {
+                        transferred: i,
+                        error: Some(err),
+                    });
+                }
+            }
+        }
+
+        //SAFETY: we have ensured it is initialized
+        Ok(unsafe { MaybeUninit::array_assume_init(buf) })
+    }
+
     /// Read from this file descriptor into a potentially uninitialized buffer.
     ///
     /// This will read until either EOF or the buffer has been filled. The

@@ -8,6 +8,8 @@
 //      would then be another way to enforce resource usage (but cgroups are
 //      more powerful)
 //TODO: try to get `Clone` back on here somehow
+//TODO: try to make the builder use `&mut self` instead of `self`. it isn't
+//      super important right now, though
 
 use meowix::{
     capabilities::CapabilitySet,
@@ -296,10 +298,9 @@ where
     /// This method errors if the edited file descriptor policy is invalid.
     pub fn fd_policy(
         mut self,
-        //TODO: we should consider a less costly interface here too
         configure: impl FnOnce(FdPolicy<'a>) -> FdPolicy<'a>,
     ) -> Result<Self, Error> {
-        let new_fd_policy = configure(self.file_descriptors.clone());
+        let new_fd_policy = configure(self.file_descriptors);
         new_fd_policy
             .is_valid()
             .ok_or(PolicyError::InvalidFdPolicy)?;

@@ -13,6 +13,9 @@
 //TODO: implement overlayfs in the mount handling
 //TODO: determine how many of the values written to kernel setting filesystems
 //      actually need newlines at the end, if any, and clean up those that don't
+//TODO: permit privileged callers to bind mount whatever fds they have to
+//      sidestep our unprivileged workarounds (w/ the consequence of greater ns
+//      pressure)
 
 pub mod cgroups;
 pub mod command;
