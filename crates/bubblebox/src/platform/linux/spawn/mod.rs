@@ -265,7 +265,7 @@ where
         ManuallyDrop::new(namespace_fd_scratch_space);
 
     //SAFETY: we're in the guest, we own this fd now
-    let guest_pipe = unsafe { OwnedFd::from_raw_fd(guest_pipe) };
+    let mut guest_pipe = unsafe { OwnedFd::from_raw_fd(guest_pipe) };
 
     match guest_post_clone(
         &policy,
@@ -298,6 +298,7 @@ where
                         unsafe {
                             fd::apply_file_descriptor_policy(
                                 &policy.file_descriptors.0,
+                                &mut guest_pipe,
                             )
                         }?;
 
@@ -824,6 +825,8 @@ where
                         PATH_COMPONENT_MAX
                     }, _, PostSpawnGuestError>(
                         |file_name| {
+                            //FIXME: we definitely could remove this and leave it
+                            //       alone
                             if !matches!(
                                 syscalls::statx(
                                     &parent_fd,
@@ -908,7 +911,7 @@ where
         open_beneath_and_write!(
             &guest_proc_fd,
             c"sys/user/max_user_namespaces",
-            b"1\n"
+            b"1"
         );
 
         //SAFETY: we're not unsharing the file descriptor namespace so

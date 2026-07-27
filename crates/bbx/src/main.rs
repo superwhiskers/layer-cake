@@ -15,6 +15,7 @@
 //   bwrap)
 //TODO: substitutions for $uid, $gid in args when used in the zip bundle to
 //      allow binding directories like /run/$uid/...
+//TODO: fd mapping, mostly to test the pipe remapping works
 
 use anyhow::Context;
 use bubblebox::{

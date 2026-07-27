@@ -35,7 +35,7 @@ pub fn write_timens_offsets(
     const fn size_offset_buffer() -> usize {
         fmt::signed_decimal_digits_upper_bound::<i64>()
             .saturating_add(fmt::unsigned_decimal_digits_upper_bound::<u32>())
-            .saturating_add(12)
+            .saturating_add(11)
     }
 
     let timens_offsets_fd = retry_on_interrupt!({
@@ -66,7 +66,6 @@ pub fn write_timens_offsets(
             &mut offset,
             monotonic_offset.nanoseconds.into_raw(),
         )?;
-        fmt::write_bytes(&mut offset_buffer, &mut offset, b"\n")?;
 
         write_checked!(
             &timens_offsets_fd,
@@ -90,7 +89,6 @@ pub fn write_timens_offsets(
             &mut offset,
             boottime_offset.nanoseconds.into_raw(),
         )?;
-        fmt::write_bytes(&mut offset_buffer, &mut offset, b"\n")?;
 
         write_checked!(
             &timens_offsets_fd,
@@ -122,11 +120,11 @@ pub fn write_simple_uid_gid_map(
     /// Sizes the buffer we need to use to avoid heap allocations.
     ///
     /// This is computed from the two ids we need, the two spaces separating
-    /// the ids and the size of the mapping, the single `1`, and the newline.
+    /// the ids and the size of the mapping and the single `1`.
     const fn size_uid_gid_map_buffer<T>() -> usize {
         2_usize
             .saturating_mul(fmt::unsigned_decimal_digits_upper_bound::<T>())
-            .saturating_add(4)
+            .saturating_add(3)
     }
 
     //NOTE: blame `clone3(2)` and the c standard
@@ -160,7 +158,7 @@ pub fn write_simple_uid_gid_map(
         &mut offset,
         source_uid.into_raw(),
     )?;
-    fmt::write_bytes(&mut uid_gid_map_buffer, &mut offset, b" 1\n")?;
+    fmt::write_bytes(&mut uid_gid_map_buffer, &mut offset, b" 1")?;
 
     open_beneath_and_write!(
         &proc_self_fd,
@@ -187,7 +185,7 @@ pub fn write_simple_uid_gid_map(
         &mut offset,
         source_gid.into_raw(),
     )?;
-    fmt::write_bytes(&mut uid_gid_map_buffer, &mut offset, b" 1\n")?;
+    fmt::write_bytes(&mut uid_gid_map_buffer, &mut offset, b" 1")?;
 
     open_beneath_and_write!(
         &proc_self_fd,

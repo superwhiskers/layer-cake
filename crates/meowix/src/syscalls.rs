@@ -1378,6 +1378,7 @@ pub unsafe fn execveat<'a>(
 ///
 /// Don't do this if you intend to do a write operation and are in a state where
 /// a process runtime may care about that.
+#[inline]
 pub unsafe fn rt_sigaction(
     signum: ffi::c_int,
     act: Option<&linux::kernel_sigaction>,
@@ -1406,6 +1407,7 @@ pub unsafe fn rt_sigaction(
 ///
 /// Don't do this if you intend to do a write operation and are in a state where
 /// a process runtime may care about that.
+#[inline]
 pub unsafe fn rt_sigprocmask(
     how: ffi::c_int,
     set: Option<&linux::kernel_sigset_t>,
@@ -1429,6 +1431,7 @@ pub unsafe fn rt_sigprocmask(
 }
 
 /// `ioctl(2)` on a pidfd to retrieve information about the process.
+#[inline]
 pub fn pidfd_get_info(fd: impl AsFd) -> Result<PidfdInfoV0, SyscallError> {
     let mut out = PidfdInfoV0::default();
 
@@ -1451,6 +1454,7 @@ pub fn pidfd_get_info(fd: impl AsFd) -> Result<PidfdInfoV0, SyscallError> {
 }
 
 /// `symlinkat(2)`.
+#[inline]
 pub fn symlinkat<'a>(
     target: &CStr,
     newdirfd: impl Into<AtFd<'a>>,
@@ -1470,4 +1474,22 @@ pub fn symlinkat<'a>(
     };
 
     Ok(())
+}
+
+/// `fcntl(2)` with `F_DUPFD_CLOEXEC(2const)`.
+#[inline]
+pub fn fcntl_dupfd_cloexec(oldfd: impl AsFd) -> Result<OwnedFd, SyscallError> {
+    //SAFETY: we know this file descriptor is valid
+    let newfd = unsafe {
+        syscall3(
+            abi::FCNTL,
+            Arg::from_fd(oldfd.as_fd()),
+            Arg::from_int(linux::F_DUPFD_CLOEXEC as ffi::c_int),
+            Arg::from_int(0),
+        )
+        .wrap_syscall(Syscall::Fcntl)?
+    };
+
+    //SAFETY: we know this is valid by the syscall having not errored
+    Ok(unsafe { OwnedFd::from_raw_fd(newfd as ffi::c_int) })
 }

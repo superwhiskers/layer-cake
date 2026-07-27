@@ -259,7 +259,7 @@ pub struct CgroupProperties {
 
     /// Whether pressure stall information accounting is enabled in the
     /// sandbox's cgroup.
-    enable_psi_accounting: bool,
+    enable_psi_accounting: Option<bool>,
 }
 
 impl CgroupProperties {
@@ -271,7 +271,13 @@ impl CgroupProperties {
 
     /// Whether pressure stall information accounting is enabled.
     pub fn psi_accounting(mut self, enable_psi_accounting: bool) -> Self {
-        self.enable_psi_accounting = enable_psi_accounting;
+        self.enable_psi_accounting = Some(enable_psi_accounting);
+        self
+    }
+
+    /// Unset the pressure stall information accounting configuration.
+    pub fn clear_psi_accounting(mut self) -> Self {
+        self.enable_psi_accounting = None;
         self
     }
 
@@ -288,11 +294,15 @@ impl CgroupProperties {
         let cgroup_fd = cgroup_fd.as_fd();
 
         if self.is_threaded {
-            open_beneath_and_write!(&cgroup_fd, c"cgroup.type", b"threaded\n");
+            open_beneath_and_write!(&cgroup_fd, c"cgroup.type", b"threaded");
         }
 
-        if self.enable_psi_accounting {
-            open_beneath_and_write!(&cgroup_fd, c"cgroup.pressure", b"1\n");
+        if let Some(enable_psi_accounting) = self.enable_psi_accounting {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"cgroup.pressure",
+                if enable_psi_accounting { b"1" } else { b"0" }
+            );
         }
 
         Ok(())
@@ -335,7 +345,7 @@ pub struct CpuController {
     /// [`sched(7)`] for more details.
     ///
     /// [`sched(7)`]: https://www.man7.org/linux/man-pages/man7/sched.7.html
-    is_idle: bool,
+    is_idle: Option<bool>,
 }
 
 impl CpuController {
@@ -422,7 +432,13 @@ impl CpuController {
 
     /// Whether the cgroup should be considered idle.
     pub fn idle(mut self, is_idle: bool) -> Self {
-        self.is_idle = is_idle;
+        self.is_idle = Some(is_idle);
+        self
+    }
+
+    /// Clear the idle state of the cgroup.
+    pub fn clear_idle(mut self) -> Self {
+        self.is_idle = None;
         self
     }
 
@@ -443,7 +459,7 @@ impl CpuController {
             open_beneath_and_write!(
                 &cgroup_fd,
                 c"cgroup.subtree_control",
-                b"+cpu\n"
+                b"+cpu"
             );
         }
 
@@ -542,8 +558,12 @@ impl CpuController {
             }
         }
 
-        if self.is_idle {
-            open_beneath_and_write!(&cgroup_fd, c"cpu.idle", b"1");
+        if let Some(is_idle) = self.is_idle {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"cpu.idle",
+                if is_idle { b"1" } else { b"0" }
+            );
         }
 
         Ok(())
@@ -718,7 +738,7 @@ pub struct MemoryController {
     /// That is, if the OOM killer were invoked within this cgroup, whether all
     /// tasks within this cgroup should be killed at once to avoid partial
     /// kills.
-    is_indivisible: bool,
+    is_indivisible: Option<bool>,
 
     /// Swap throttle limit for this cgroup, in bytes.
     ///
@@ -736,7 +756,7 @@ pub struct MemoryController {
     zswap_max: Option<Resource<u64>>,
 
     /// Whether to disable writeback for zswap pages.
-    disable_zswap_writeback: bool,
+    disable_zswap_writeback: Option<bool>,
 }
 
 impl MemoryController {
@@ -808,7 +828,13 @@ impl MemoryController {
     /// tasks within this cgroup should be killed at once to avoid partial
     /// kills.
     pub fn indivisible(mut self, is_indivisible: bool) -> Self {
-        self.is_indivisible = is_indivisible;
+        self.is_indivisible = Some(is_indivisible);
+        self
+    }
+
+    /// Unset the `memory.oom.group` setting.
+    pub fn clear_indivisible(mut self) -> Self {
+        self.is_indivisible = None;
         self
     }
 
@@ -859,7 +885,13 @@ impl MemoryController {
         mut self,
         disable_zswap_writeback: bool,
     ) -> Self {
-        self.disable_zswap_writeback = disable_zswap_writeback;
+        self.disable_zswap_writeback = Some(disable_zswap_writeback);
+        self
+    }
+
+    /// Unset the `memory.zswap.writeback` setting.
+    pub fn clear_disable_zswap_writeback(mut self) -> Self {
+        self.disable_zswap_writeback = None;
         self
     }
 
@@ -873,17 +905,88 @@ impl MemoryController {
         &self,
         cgroup_fd: impl AsFd,
     ) -> Result<(), HostError> {
+        let mut itoa_buffer = itoa::Buffer::new();
         let cgroup_fd = cgroup_fd.as_fd();
 
         if self.subtree_control {
             open_beneath_and_write!(
                 &cgroup_fd,
                 c"cgroup.subtree_control",
-                b"+memory\n"
+                b"+memory"
             );
         }
 
-        //FIXME: implement these, skipped for now
+        if let Some(min) = &self.min {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"memory.min",
+                min.into_str(&mut itoa_buffer).as_bytes()
+            );
+        }
+
+        if let Some(low) = &self.low {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"memory.low",
+                low.into_str(&mut itoa_buffer).as_bytes()
+            );
+        }
+
+        if let Some(high) = &self.high {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"memory.high",
+                high.into_str(&mut itoa_buffer).as_bytes()
+            );
+        }
+
+        if let Some(max) = &self.max {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"memory.max",
+                max.into_str(&mut itoa_buffer).as_bytes()
+            );
+        }
+
+        if let Some(is_indivisible) = self.is_indivisible {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"memory.oom.group",
+                if is_indivisible { b"1" } else { b"0" }
+            );
+        }
+
+        if let Some(swap_high) = &self.swap_high {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"memory.swap.high",
+                swap_high.into_str(&mut itoa_buffer).as_bytes()
+            );
+        }
+
+        if let Some(swap_max) = &self.swap_max {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"memory.swap.max",
+                swap_max.into_str(&mut itoa_buffer).as_bytes()
+            );
+        }
+
+        if let Some(zswap_max) = &self.zswap_max {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"memory.zswap.max",
+                zswap_max.into_str(&mut itoa_buffer).as_bytes()
+            );
+        }
+
+        if let Some(disable_zswap_writeback) = self.disable_zswap_writeback {
+            open_beneath_and_write!(
+                &cgroup_fd,
+                c"memory.zswap.writeback",
+                if disable_zswap_writeback { b"0" } else { b"1" }
+            );
+        }
 
         Ok(())
     }
@@ -923,7 +1026,7 @@ impl IoController {
             open_beneath_and_write!(
                 &cgroup_fd,
                 c"cgroup.subtree_control",
-                b"+io\n"
+                b"+io"
             );
         }
 
@@ -983,16 +1086,15 @@ impl PidsController {
             open_beneath_and_write!(
                 &cgroup_fd,
                 c"cgroup.subtree_control",
-                b"+pids\n"
+                b"+pids"
             );
         }
 
         if let Some(max) = self.max {
-            let stringified_value = max.into_str(&mut itoa_buffer);
             open_beneath_and_write!(
                 &cgroup_fd,
                 c"pids.max",
-                stringified_value.as_bytes()
+                max.into_str(&mut itoa_buffer).as_bytes()
             );
         }
 

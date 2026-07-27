@@ -286,6 +286,9 @@ pub enum Syscall {
     /// `symlinkat(2)`.
     Symlinkat = 44,
 
+    /// `fcntl(2)`.
+    Fcntl = 45,
+
     /// Syscall variant was not recognized.
     Unknown = u8::MAX,
 }
@@ -338,6 +341,7 @@ impl fmt::Display for Syscall {
             Self::Waitid => "waitid(2)",
             Self::Execveat => "execveat(2)",
             Self::Symlinkat => "symlinkat(2)",
+            Self::Fcntl => "fcntl(2)",
             Self::Unknown => "unknown syscall",
         })
     }
@@ -391,6 +395,7 @@ impl From<u8> for Syscall {
             42 => Syscall::Waitid,
             43 => Syscall::Execveat,
             44 => Syscall::Symlinkat,
+            45 => Syscall::Fcntl,
             _ => Syscall::Unknown,
         }
     }
