@@ -51,6 +51,7 @@
               rustToolchain
               pkgs.cargo-deny
               pkgs.pkg-config
+              pkgs.lld
             ];
 
             CARGO_BUILD_TARGET = target;

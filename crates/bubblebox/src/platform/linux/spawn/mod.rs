@@ -484,10 +484,16 @@ where
 
     let guest_proc_fs_fd = syscalls::fsopen(c"proc", linux::FSOPEN_CLOEXEC)?;
 
-    //NOTE: there's really no point to setting this but we do it anyway in the
-    //      unlikely event this leaks into the guest. we unfortunately can't
-    //      blanket set subset=pid due to needing the full proc view to disable
-    //      new user namespaces
+    //NOTE: we can't blanket set subset=pid due to the userns disable trick
+    //      requiring more access, but we also need to set this to support
+    //      container runtimes which overmount certain /proc files without
+    //      assuming a proc location? there may be a better solution but this
+    //       works for now
+    //FIXME: find a workaround?
+    if !policy.namespaces.user.disable_userns {
+        syscalls::fsconfig_set_string(&guest_proc_fs_fd, c"subset", c"pid")?;
+    }
+
     //TODO: set nosuid,nodev,noexec too just in case
     syscalls::fsconfig_set_string(
         &guest_proc_fs_fd,

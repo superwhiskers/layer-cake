@@ -83,6 +83,7 @@ Time namespace offsets:
 User namespace options:
 --disable-userns\tPrevent processes in the sandbox from creating further user
 \t\t\tnamespaces
+--enable-userns\t\tAllow processes in the sandbox to create new user namespaces
 --uid UID\t\tSet the UID used by the sandbox's user-namespace mapping
 --gid GID\t\tSet the GID used by the sandbox's user-namespace mapping
 
@@ -128,7 +129,7 @@ Filesystem options:
 \t\t\t\tguest.
 
 General options:
-\t-h, --help\tPrint this help and exit
+-h, --help\tPrint this help and exit
 
 The staged time-offset components are copied when --set-monotonic-offset or
 --set-boottime-offset is encountered. Likewise, --mode affects only subsequent
@@ -293,6 +294,11 @@ fn interpret_policy<'a>(
             Long("disable-userns") => {
                 policy = policy.namespace(|namespace| {
                     namespace.user_namespace(|user| user.disable_userns(true))
+                });
+            }
+            Long("enable-userns") => {
+                policy = policy.namespace(|namespace| {
+                    namespace.user_namespace(|user| user.disable_userns(false))
                 });
             }
             Long("uid") => {

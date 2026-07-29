@@ -25,7 +25,7 @@ pub unsafe fn reset_signal_dispositions() -> Result<(), SyscallError> {
     let mut disposition = unsafe { mem::zeroed::<linux::kernel_sigaction>() };
     disposition.sa_handler_kernel = linux_sig::SIG_DFL;
 
-    for signal in 1..linux::NSIG {
+    for signal in 1..=linux::_NSIG {
         if signal == linux::SIGKILL || signal == linux::SIGSTOP {
             //NOTE: we can't handle these
             continue;

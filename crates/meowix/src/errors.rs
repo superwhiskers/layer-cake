@@ -501,6 +501,7 @@ pub enum StringRead {
     Utf8(FromUtf8Error),
 }
 
+#[cfg(feature = "alloc")]
 impl fmt::Display for StringRead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -510,6 +511,7 @@ impl fmt::Display for StringRead {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl error::Error for StringRead {}
 
 #[cfg(feature = "alloc")]

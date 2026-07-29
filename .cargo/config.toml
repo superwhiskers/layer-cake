@@ -4,6 +4,7 @@ rustflags = []
 [target.'cfg(target_arch = "x86_64")']
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
+    "-C", "link-arg=-fuse-ld=lld",
 ]
 
 [target.'cfg(all())']
@@ -11,7 +12,7 @@ rustflags = [
     "-Z", "stack-protector=strong",
 ]
 
-[target.x86_64-unknown-linux-gnu]
+[target.x86_64-unknown-linux-musl]
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-Z", "stack-protector=strong",
@@ -23,7 +24,7 @@ rustflags = [
     #"-C", "link-arg=-Wl,-z,nodlopen",
 ]
 
-[target.aarch64-unknown-linux-gnu]
+[target.aarch64-unknown-linux-musl]
 rustflags = [
     "-Z", "stack-protector=strong",
     "-Z", "branch-protection=bti,pac-ret,leaf",

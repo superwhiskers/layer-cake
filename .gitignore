@@ -4,5 +4,5 @@ crates/gtk4/.flatpak-builder/
 crates/gtk4/src/config.rs
 crates/gtk4/out/
 target/
-result/
+result
 .direnv/

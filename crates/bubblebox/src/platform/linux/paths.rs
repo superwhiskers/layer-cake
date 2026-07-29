@@ -201,7 +201,8 @@ impl HostFile {
                             as u64,
                         mode: 0,
                         resolve: (linux::RESOLVE_NO_MAGICLINKS
-                            | linux::RESOLVE_NO_SYMLINKS)
+                            | linux::RESOLVE_NO_SYMLINKS
+                            | linux::RESOLVE_BENEATH)
                             as u64,
                     },
                 )
@@ -224,6 +225,17 @@ impl HostFile {
                 Ok(name.to_owned())
             })?;
 
+        Self::capture_identity(dirfd, name)
+    }
+
+    /// Opens a file descriptor to the specified file beneath the directory file
+    /// descriptor and bundles it into a host file structure.
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    #[inline(always)]
+    fn capture_identity(dirfd: OwnedFd, name: CString) -> Result<Self, Error> {
         let fd = retry_on_interrupt!({
             syscalls::openat2(
                 dirfd.as_fd(),
@@ -321,6 +333,7 @@ pub struct HostDirectory(OwnedFd);
 
 impl HostDirectory {
     /// Convert this [`HostDirectory`] into its underlying [`OwnedFd`].
+    #[inline(always)]
     pub fn into_fd(self) -> OwnedFd {
         self.0
     }
@@ -331,6 +344,7 @@ impl HostDirectory {
     ///
     /// This method errors if the specified fd is not a path file descriptor
     /// representing a directory, or if calling `statx(2)` fails.
+    #[inline]
     pub fn new(fd: OwnedFd) -> Result<Self, Error> {
         if is_directory(fd.as_fd()).wrap_error::<PolicyError>()? {
             //SAFETY: we just verified that it's a directory
@@ -347,17 +361,50 @@ impl HostDirectory {
     ///
     /// The provided [`OwnedFd`] must be a path file descriptor representing a
     /// directory.
+    #[inline(always)]
     pub unsafe fn new_unchecked(fd: OwnedFd) -> Self {
         Self(fd)
     }
 
     /// Creates a new [`HostDirectory`] from the given [`Path`].
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    #[inline]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
-        Self::open_at(Cwd, path)
+        let fd = path
+            .as_ref()
+            .as_os_str()
+            .as_bytes()
+            .with_c_str::<{ PATH_MAX }, _, PolicyError>(|path| {
+                retry_on_interrupt!({
+                    syscalls::openat2(
+                        Cwd,
+                        path,
+                        linux::open_how {
+                            flags: (linux::O_PATH
+                                | linux::O_DIRECTORY
+                                | linux::O_CLOEXEC)
+                                as u64,
+                            mode: 0,
+                            resolve: (linux::RESOLVE_NO_MAGICLINKS) as u64,
+                        },
+                    )
+                })
+                .map_err(Into::into)
+            })?;
+
+        Self::new(fd)
     }
 
     /// Creates a new [`HostDirectory`] from the given [`Path`], opening
     /// the file descriptor beneath the given path file descriptor.
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    #[inline]
     pub fn open_at<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
@@ -378,21 +425,20 @@ impl HostDirectory {
                                 | linux::O_CLOEXEC)
                                 as u64,
                             mode: 0,
-                            resolve: linux::RESOLVE_NO_MAGICLINKS as u64,
+                            resolve: (linux::RESOLVE_NO_MAGICLINKS
+                                | linux::RESOLVE_BENEATH)
+                                as u64,
                         },
                     )
                 })
                 .map_err(Into::into)
             })?;
 
-        if is_directory(fd.as_fd()).wrap_error::<PolicyError>()? {
-            Ok(Self(fd))
-        } else {
-            Err(PolicyError::NotADirectory.into())
-        }
+        Self::new(fd)
     }
 
     /// Borrows the file descriptor.
+    #[inline(always)]
     pub fn as_borrowed(&self) -> HostDirectoryRef<'_> {
         HostDirectoryRef(self.as_fd())
     }
