@@ -1,4 +1,4 @@
 [toolchain]
-channel = "nightly-2026-08-09"
+channel = "nightly-2026-08-24"
 components = ["rust-src", "rustfmt", "clippy"]
-targets = ["i686-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+targets = ["i686-unknown-linux-musl", "x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"]
