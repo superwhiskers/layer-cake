@@ -62,9 +62,11 @@ Namespace options:
 --unshare-network\tCreate an isolated network namespace
 --share-uts\t\tUse the caller's UTS namespace
 --unshare-uts\t\tCreate a private UTS namespace
---clear-hostname\tCreate a private UTS namespace and clear its hostname
+--clear-hostname\tCreate a private UTS namespace and reset its hostname to that
+\t\t\tof the parent
 --hostname NAME\t\tCreate a private UTS namespace and set its hostname
---clear-domain\t\tCreate a private UTS namespace and clear its NIS domain name
+--clear-domain\t\tCreate a private UTS namespace and reset its NIS domain name
+\t\t\tto that of the parent
 --domain NAME\t\tCreate a private UTS namespace and set its NIS domain name
 --share-time\t\tUse the caller's time namespace
 --unshare-time\t\tCreate a private time namespace without changing its clock
@@ -107,7 +109,7 @@ Environment options:
 --cap-add CAP\t\tGrant capability CAP to the program
 --cap-drop CAP\t\tRemove capability CAP from the program
 --cap-drop all\t\tRemove all capabilities from the program. This is the
-\t\t\tdefault
+\t\t\tdefault state of capabilities
 
 Filesystem options:
 --mode MODE\t\t\tSet the octal mode used by subsequent --directory
@@ -474,7 +476,7 @@ fn interpret_policy<'a>(
                 if raw_cap == "all" {
                     capability_set = CapabilitySet::empty();
                 } else {
-                    capability_set ^= CapabilitySet::from_str(raw_cap).ok_or(
+                    capability_set &= !CapabilitySet::from_str(raw_cap).ok_or(
                         anyhow::format_err!("capability was not valid"),
                     )?;
                 }

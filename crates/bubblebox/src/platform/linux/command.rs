@@ -84,7 +84,10 @@ impl CommandInner {
     /// # Errors
     ///
     /// This method erors if the provided [`OsStr`] was not a valid C string.
-    pub(crate) fn arg0(mut self, arg: impl AsRef<OsStr>) -> Result<Self, Error> {
+    pub(crate) fn arg0(
+        mut self,
+        arg: impl AsRef<OsStr>,
+    ) -> Result<Self, Error> {
         let mut arg = CString::new(arg.as_ref().as_bytes().to_owned())
             .map_err(Tag::tag_with::<CommandError>)?
             .into_raw() as *const _;
@@ -243,8 +246,10 @@ impl<'a> GuestInner<'a> {
     /// Wait on the guest process to exit completely.
     pub(crate) fn wait(&self) -> Result<ExitStatus, Error> {
         let mut fds = [PollFd::new(self.pidfd.as_fd(), linux::POLLIN as i16)];
-        let n_ready = retry_on_interrupt!({ syscalls::ppoll(&mut fds, None) })
-            .wrap_error::<CommandError>()?;
+        let n_ready = retry_on_interrupt!({
+            syscalls::ppoll(&mut fds, None::<linux::__kernel_timespec>)
+        })
+        .wrap_error::<CommandError>()?;
         debug_assert_eq!(n_ready, 1);
 
         Ok(ExitStatus::from_raw(

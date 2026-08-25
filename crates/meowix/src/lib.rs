@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 #![no_std]
-#![feature(never_type)]
 #![feature(c_size_t)]
 #![feature(pattern_type_macro)]
 #![feature(pattern_type_range_trait)]

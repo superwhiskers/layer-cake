@@ -1,18 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Direct syscall wrappers.
-//!
-//! Originally, we used [`rustix`] for this purpose, but due to the hazard of
-//! potentially allocating post-`clone3(2)`, we were forced to remove it.
-//!
-//! Because `cargo` will unify feature flags across the dependency tree, an
-//! unrelated dependency introducing `std` to the feature flags of `rustix` may
-//! cause allocations, which are not safe post-`clone3(2)`.
-//!
-//! [`rustix`]: https://github.com/bytecodealliance/rustix
 
 use core::{
-    borrow::Borrow,
+    borrow::{Borrow, BorrowMut},
     ffi::{self, CStr},
     hint,
     marker::PhantomData,
@@ -727,10 +718,10 @@ impl<'fd> PollFd<'fd> {
 #[inline]
 pub fn ppoll(
     fds: &mut [PollFd<'_>],
-    mut timeout: Option<linux::__kernel_timespec>,
+    mut timeout: Option<impl BorrowMut<linux::__kernel_timespec>>,
 ) -> Result<usize, SyscallError> {
     let timespec = if let Some(timeout) = &mut timeout {
-        timeout
+        timeout.borrow_mut()
     } else {
         ptr::null_mut::<linux::__kernel_timespec>()
     };
@@ -1237,29 +1228,46 @@ pub fn socket(
     Ok(unsafe { OwnedFd::from_raw_fd(raw_fd as _) })
 }
 
-/// `recvfrom(2)` without the source address fields.
-//TODO: consider adding source address results somewhere. we don't really care
-//      about it for our purposes so i'll ignore it for now
+/// `recvmsg(2)`.
+//TODO: add extended support for this function, i.e. ancillary data, flags,
+//      etc. currently this only has the bare minimum required to support our
+//      netlink use case
 #[inline]
-pub fn recvfrom(
+pub fn recvmsg(
     sockfd: impl AsFd,
     buffer: &mut [u8],
     flags: ffi::c_int,
+    msg_flags: &mut ffi::c_uint,
 ) -> Result<usize, SyscallError> {
-    //SAFETY: the invariants of the provided types ensure this call is safe
-    let n_read = unsafe {
-        syscall6(
-            abi::RECVFROM,
-            Arg::from_fd(sockfd.as_fd()),
-            Arg::from_mut_ptr(buffer.as_mut_ptr()),
-            Arg::from_usize(buffer.len()),
-            Arg::from_int(flags),
-            Arg::from_mut_ptr(ptr::null_mut::<linux_net::sockaddr>()),
-            Arg::from_mut_ptr(ptr::null_mut::<linux_net::socklen_t>()),
-        )
-        .wrap_syscall(Syscall::Recvfrom)?
+    let mut iovec = linux::iovec {
+        iov_base: buffer.as_mut_ptr().cast::<ffi::c_void>(),
+        iov_len: buffer.len() as u64,
+    };
+    let iovec_mut: *mut linux::iovec = &mut iovec;
+
+    let mut msghdr = linux_net::msghdr {
+        msg_name: ptr::null_mut::<ffi::c_void>(),
+        msg_namelen: 0,
+        msg_iov: iovec_mut.cast::<linux_net::iovec>(),
+        msg_iovlen: 1,
+        msg_control: ptr::null_mut::<ffi::c_void>(),
+        msg_controllen: 0,
+        msg_flags: 0,
     };
 
+    //SAFETY: the invariants of the provided types ensure this call is safe
+    let n_read = unsafe {
+        syscall3(
+            abi::RECVMSG,
+            Arg::from_fd(sockfd.as_fd()),
+            Arg::from_mut_ptr(&mut msghdr),
+            Arg::from_int(flags),
+        )
+        .wrap_syscall(Syscall::Recvmsg)?
+    };
+
+    //FIXME: get a better solution for passing these back
+    *msg_flags = msghdr.msg_flags;
     Ok(n_read as _)
 }
 

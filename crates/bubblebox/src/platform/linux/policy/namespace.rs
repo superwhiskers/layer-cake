@@ -457,6 +457,19 @@ impl UserOptions {
 
     /// Whether to disable the creation of new user namespaces within the
     /// sandbox.
+    ///
+    /// # Warning
+    ///
+    /// This is implemented by setting the max user namespace limit to 1 in the
+    /// first user namespace bubblebox creates, then entering a new one so
+    /// that the limit may no longer be adjusted by the guest process. This has
+    /// the effect of also changing the meaning of the final capability set
+    /// the program has. Ensure this is not a problem for the guest process
+    /// prior to preventing user namespace creation this way.
+    ///
+    /// In the event this is undesired, deny new user namespace creation using
+    /// seccomp. Alternatively, in the future, a two-process
+    /// `max_user_namespaces` limit establishment dance may be implemented.
     pub fn disable_userns(mut self, disable_userns: bool) -> Self {
         self.disable_userns = disable_userns;
         self

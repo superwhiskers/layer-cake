@@ -453,6 +453,7 @@ pub(crate) enum BindMount {
 
 /// Attributes applied to a mount.
 //TODO: should we just use [`MountAttrFlags`] instead of this custom structure?
+//FIXME: provide a builder interface to this in the future
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct MountAttributes {
     /// Make the mount read-only.

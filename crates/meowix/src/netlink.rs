@@ -5,18 +5,22 @@
 //! These are custom-written to not require memory allocation, such that they
 //! may be used in the child after `clone3(2)`.
 
-//TODO: consider adding a timeout for receiving on the netlink socket. use poll
-//      or something like that
 //TODO: consider zeroing padding bytes around attributes
 //TODO: consider treating `EEXIST` as success (remove `NLM_F_EXCL` flag from
 //      the address setup)
+//TODO: in the future, we should attempt to generalize the functionality here
+//      so that it may function on shared netlink sockets
 
 use core::{ffi, ptr};
 use linux_raw_sys::{general as linux, net as linux_net, netlink};
 
 use crate::{
-    errno::Errno, errors::Netlink as NetlinkError, fd::AsFd,
-    retry_on_interrupt, syscalls, util::check_if_incomplete,
+    errno::Errno,
+    errors::Netlink as NetlinkError,
+    fd::AsFd,
+    retry_on_interrupt,
+    syscalls::{self, PollFd},
+    util::check_if_incomplete,
 };
 
 /// Writes an arbitrary value `T` to the buffer, incrementing `offset` by the
@@ -170,7 +174,8 @@ fn send_message(socket: impl AsFd, message: &[u8]) -> Result<(), NetlinkError> {
     Ok(())
 }
 
-/// Check for an acknowledgement a netlink message from the kernel.
+/// Check for an acknowledgement a netlink message from the kernel, with a 1
+/// second aggregate polling budget.
 ///
 /// # Errors
 ///
@@ -179,13 +184,58 @@ fn send_message(socket: impl AsFd, message: &[u8]) -> Result<(), NetlinkError> {
 fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), NetlinkError> {
     let mut buffer = [0; 1024];
 
+    let mut timeout = linux::__kernel_timespec {
+        tv_sec: 1,
+        tv_nsec: 0,
+    };
+
     loop {
-        let n_read = retry_on_interrupt!({
-            syscalls::recvfrom(&socket, &mut buffer, 0)
+        let mut msg_flags = 0;
+
+        let mut fds = [PollFd::new(socket.as_fd(), linux::POLLIN as i16)];
+        let n_ready = retry_on_interrupt!({
+            syscalls::ppoll(&mut fds, Some(&mut timeout))
         })?;
+        if n_ready == 0 {
+            return Err(NetlinkError::AckTimeout.into());
+        }
+
+        debug_assert_eq!(n_ready, 1, "we are waiting on exactly 1 fd");
+        debug_assert_eq!(
+            fds[0].revents()
+                & !(linux::POLLIN
+                    | linux::POLLERR
+                    | linux::POLLHUP
+                    | linux::POLLNVAL) as i16,
+            0,
+            "we must not have any unexpected events waiting",
+        );
+
+        let n_read = match retry_on_interrupt!({
+            syscalls::recvmsg(
+                &socket,
+                &mut buffer,
+                linux_net::MSG_DONTWAIT as ffi::c_int,
+                &mut msg_flags,
+            )
+        }) {
+            Ok(n) => n,
+            Err(e) if e.error() == Errno::AGAIN => continue,
+            Err(e) => return Err(e.into()),
+        };
+
+        if msg_flags & linux_net::MSG_TRUNC != 0 {
+            return Err(NetlinkError::TruncatedMessage.into());
+        }
 
         let mut offset = 0;
-        while offset + size_of::<netlink::nlmsghdr>() <= n_read {
+        while offset < n_read {
+            let remaining = n_read - offset;
+
+            if remaining < size_of::<netlink::nlmsghdr>() {
+                return Err(NetlinkError::MalformedHeader.into());
+            }
+
             //SAFETY: we just checked that a header fits at the offset
             let header = unsafe {
                 ptr::read_unaligned(
@@ -195,12 +245,10 @@ fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), NetlinkError> {
 
             let message_length = header.nlmsg_len as usize;
 
-            if message_length < size_of::<netlink::nlmsghdr>() {
+            if message_length < size_of::<netlink::nlmsghdr>()
+                || message_length > remaining
+            {
                 return Err(NetlinkError::MalformedHeader.into());
-            }
-
-            if offset + message_length > n_read {
-                return Err(NetlinkError::TruncatedMessage.into());
             }
 
             if header.nlmsg_seq != sequence {
@@ -208,39 +256,32 @@ fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), NetlinkError> {
                 return Err(NetlinkError::SequenceMismatch.into());
             }
 
-            match header.nlmsg_type as u32 {
-                netlink::NLMSG_ERROR => {
-                    if size_of::<netlink::nlmsghdr>()
-                        + size_of::<netlink::nlmsgerr>()
-                        > message_length
-                    {
-                        return Err(NetlinkError::IncorrectSize.into());
-                    }
-
-                    //SAFETY: we just checked that the message data fits within
-                    //        the buffer
-                    let error = unsafe {
-                        ptr::read_unaligned(
-                            buffer
-                                .as_ptr()
-                                .add(offset + size_of::<netlink::nlmsghdr>())
-                                .cast::<netlink::nlmsgerr>(),
-                        )
-                    };
-
-                    if error.error == 0 {
-                        return Ok(());
-                    }
-
-                    return Err(NetlinkError::Errno(Errno::from_raw_os_error(
-                        -error.error,
-                    ))
-                    .into());
+            if header.nlmsg_type as u32 == netlink::NLMSG_ERROR {
+                if size_of::<netlink::nlmsghdr>()
+                    + size_of::<netlink::nlmsgerr>()
+                    > message_length
+                {
+                    return Err(NetlinkError::IncorrectSize.into());
                 }
-                netlink::NLMSG_DONE => {
+
+                //SAFETY: we just checked that the message data fits within
+                //        the buffer
+                let error = unsafe {
+                    ptr::read_unaligned(
+                        buffer
+                            .as_ptr()
+                            .add(offset + size_of::<netlink::nlmsghdr>())
+                            .cast::<netlink::nlmsgerr>(),
+                    )
+                };
+
+                if error.error == 0 {
                     return Ok(());
                 }
-                _ => (),
+
+                return Err(
+                    NetlinkError::Errno(Errno(error.error as u16)).into()
+                );
             }
 
             let aligned_length = message_length

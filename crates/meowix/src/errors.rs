@@ -31,8 +31,11 @@ pub enum Netlink {
     /// Fixed-width integer would have overflowed.
     IntegerOverflow,
 
-    /// A write was incomplete
+    /// A write was incomplete.
     IncompleteWrite,
+
+    /// Timed out while waiting for ACK.
+    AckTimeout,
 
     /// Errno value.
     Errno(Errno),
@@ -63,6 +66,9 @@ impl fmt::Display for Netlink {
                 f.write_str("a fixed-width integer would have overflowed")
             }
             Self::IncompleteWrite => f.write_str("a write was incomplete"),
+            Self::AckTimeout => {
+                f.write_str("timed out while waiting for an ACK")
+            }
             Self::Errno(e) => write!(f, "netlink error: {e}"),
             Self::Syscall(e) => write!(f, "syscall error: {e}"),
         }
@@ -247,8 +253,8 @@ pub enum Syscall {
     /// `ppoll(2)`.
     Ppoll = 31,
 
-    /// `recvfrom(2)`.
-    Recvfrom = 32,
+    /// `recvmsg(2)`.
+    Recvmsg = 32,
 
     /// `sendto(2)`.
     Sendto = 33,
@@ -328,7 +334,7 @@ impl fmt::Display for Syscall {
             Self::RtSigaction => "rt_sigaction(2)",
             Self::RtSigprocmask => "rt_sigprocmask(2)",
             Self::Ppoll => "ppoll(2)",
-            Self::Recvfrom => "recvfrom(2)",
+            Self::Recvmsg => "recvmsg(2)",
             Self::Sendto => "sendto(2)",
             Self::Socket => "socket(2)",
             Self::Ioctl => "ioctl(2)",
@@ -382,7 +388,7 @@ impl From<u8> for Syscall {
             29 => Syscall::RtSigaction,
             30 => Syscall::RtSigprocmask,
             31 => Syscall::Ppoll,
-            32 => Syscall::Recvfrom,
+            32 => Syscall::Recvmsg,
             33 => Syscall::Sendto,
             34 => Syscall::Socket,
             35 => Syscall::Ioctl,

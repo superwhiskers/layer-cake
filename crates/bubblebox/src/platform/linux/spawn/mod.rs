@@ -279,6 +279,10 @@ where
         Ok(action) => {
             let wire_success: PostSpawnGuestWire = Ok(()).into();
 
+            //FIXME: move the success write into the spawn action code so that
+            //       the only syscall performed after is execveat (in the case
+            //       of `SpawnAction::Exec`) (this is a minor robustness fix)
+
             //NOTE: if this errors we can't really do anything, just continue
             let _ = guest_pipe.write_all(bytemuck::bytes_of(&wire_success));
 
