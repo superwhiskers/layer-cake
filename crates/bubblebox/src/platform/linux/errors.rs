@@ -113,6 +113,9 @@ pub enum Command {
     /// Syscall error.
     Syscall(SyscallError),
 
+    /// Environment variable key contained an equals (`=`) character.
+    InvalidEnvironmentVariable,
+
     /// C string buffer was too small.
     CStrBufferTooSmall,
 
@@ -124,6 +127,9 @@ impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Syscall(e) => write!(f, "syscall error: {e}"),
+            Self::InvalidEnvironmentVariable => f.write_str(
+                "an environment variable key contained the equals character",
+            ),
             Self::CStrBufferTooSmall => f.write_str(
                 "a buffer used for C string conversion was too small",
             ),

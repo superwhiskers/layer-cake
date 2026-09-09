@@ -209,7 +209,12 @@ where
             MountInner::Mqueue { attributes } => {
                 let fs_fd = syscalls::fsopen(c"mqueue", linux::FSOPEN_CLOEXEC)?;
 
-                syscalls::fsconfig_cmd_create_excl(&fs_fd)?;
+                //NOTE: we use `FSCONFIG_CMD_CREATE` here instead of
+                //      `FSCONFIG_CMD_CREATE_EXCL` as the latter will not work
+                //      due to there only ever being one `mqueue` instance in
+                //      an IPC namespace, and this instance is created upon IPC
+                //      namespace initialization
+                syscalls::fsconfig_cmd_create(&fs_fd)?;
                 ResolvedMount::Fd {
                     fd: syscalls::fsmount(
                         fs_fd,

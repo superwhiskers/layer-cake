@@ -165,8 +165,15 @@ pub unsafe fn clone3(
             Arg::from_usize(size_of::<linux::clone_args>()),
         )
         .wrap_syscall(Syscall::Clone3)?
-    };
-    Ok(CloneResult::from(who_am_i))
+    } as i32;
+
+    Ok(if who_am_i == 0 {
+        CloneResult::Child
+    } else {
+        //SAFETY: we checked it wasn't zero after narrowing, and the
+        //        documentation of `clone3(2)` specifies that it is a valid pid
+        CloneResult::Parent(unsafe { Pid::from_raw_unchecked(who_am_i) })
+    })
 }
 
 /// Result of calling `clone3(2)`.
@@ -177,18 +184,6 @@ pub enum CloneResult {
 
     /// In the child process.
     Child,
-}
-
-impl From<ffi::c_ulong> for CloneResult {
-    fn from(value: ffi::c_ulong) -> Self {
-        if value == 0 {
-            return Self::Child;
-        }
-
-        //SAFETY: we checked it wasn't zero, and the documentation of
-        //        `clone3(2)` indicates it must be a valid pid
-        Self::Parent(unsafe { Pid::from_raw_unchecked(value as i32) })
-    }
 }
 
 /// `mount_setattr(2)`
@@ -485,6 +480,31 @@ pub fn fsconfig_set_fd(
             Arg::from_c_str(key),
             Arg::from_ptr(ptr::null::<ffi::c_void>()),
             Arg::from_fd(aux.as_fd()),
+        )
+        .wrap_syscall(Syscall::Fsconfig)?
+    };
+
+    Ok(())
+}
+
+/// `fsconfig(2)` with `FSCONFIG_CMD_CREATE`.
+///
+/// # Warning
+///
+/// Prefer [`fsconfig_cmd_create_excl`] wherever possible as it avoids reusing
+/// extant filesystem instances. For more information, see its documentation and
+/// `fsconfig(2)`.
+#[inline]
+pub fn fsconfig_cmd_create(fd: impl AsFd) -> Result<(), SyscallError> {
+    //SAFETY: invariants upon the provided types ensure this is a valid syscall
+    let _ = unsafe {
+        syscall5(
+            abi::FSCONFIG,
+            Arg::from_fd(fd.as_fd()),
+            Arg::from_uint(fsconfig::FSCONFIG_CMD_CREATE as ffi::c_uint),
+            Arg::from_ptr(ptr::null::<ffi::c_char>()),
+            Arg::from_ptr(ptr::null::<ffi::c_void>()),
+            Arg::from_int(0),
         )
         .wrap_syscall(Syscall::Fsconfig)?
     };

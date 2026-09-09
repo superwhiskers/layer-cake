@@ -346,7 +346,7 @@ impl TimeOffsetSeconds {
     /// This must not have a magnitude exceeding `KTIME_SEC_MAX`.
     pub const fn new(value: i64) -> Option<Self> {
         //NOTE: this is fine because the minimum value is still out of range
-        if value.wrapping_abs() <= KTIME_SEC_MAX {
+        if (-KTIME_SEC_MAX..=KTIME_SEC_MAX).contains(&value) {
             //SAFETY: we just checked that it was within the bounds
             Some(unsafe { Self::new_unchecked(value) })
         } else {

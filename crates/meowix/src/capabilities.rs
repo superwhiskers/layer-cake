@@ -38,24 +38,28 @@ pub fn drop_bounding_set(
 
 /// Raise the specified capabilities into the ambient set of the process.
 ///
+/// # Notes
+///
+/// As with [`PR_CAPBSET_DROP(2const)`]---wrapped in
+/// [`drop_bounding_set`]---[`Errno::INVAL`] indicates that a requested
+/// capability was not known to the kernel. This is usually not a problem, but
+/// it is propagated in the event that it is.
+///
+/// Since the capability space is contiguous under a normal Linux kernel,
+/// subsequent requested capabilities do not need to be tested for after
+/// [`Errno::INVAL`]. Hence, repeated calls to this function are unnecessary to
+/// attain the largest possible set of ambient capabilities.
+///
 /// # Errors
 ///
-/// This function errors if `PR_CAP_AMBIENT(2const)` fails with an error other
-/// than `EINVAL`.
+/// This function errors if `PR_CAP_AMBIENT_RAISE(2const)` fails.
 pub fn set_ambient_capabilities(
     raise: CapabilitySet,
 ) -> Result<(), SyscallError> {
     for cap in 0..MAX_LAST_CAP {
-        if raise.contains(CapabilitySet::from_bits_retain(1_u64 << cap))
-            && let Err(e) =
-                //NOTE: more c type messiness
-                syscalls::raise_capability_into_ambient_set(cap as _)
-        {
-            //NOTE: the capability space is contiguous so we can stop here
-            if e.error() == Errno::INVAL {
-                break;
-            }
-            return Err(e);
+        if raise.contains(CapabilitySet::from_bits_retain(1_u64 << cap)) {
+            //NOTE: more c type messiness
+            syscalls::raise_capability_into_ambient_set(cap as _)?;
         }
     }
     Ok(())

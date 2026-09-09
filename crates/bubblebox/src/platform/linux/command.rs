@@ -146,7 +146,14 @@ impl CommandInner {
         key: impl AsRef<OsStr>,
         value: impl AsRef<OsStr>,
     ) -> Result<Self, Error> {
-        let mut env = key.as_ref().to_owned();
+        let key = key.as_ref();
+
+        //NOTE: reject embedded equals in the key to avoid confusion
+        if key.as_bytes().contains(&b'=') {
+            return Err(CommandError::InvalidEnvironmentVariable.into());
+        }
+
+        let mut env = key.to_owned();
         env.reserve(value.as_ref().len() + 2);
         env.push("=");
         env.push(&value);
@@ -154,7 +161,7 @@ impl CommandInner {
         let env = CString::new(env.into_vec())
             .map_err(Tag::tag_with::<CommandError>)?;
 
-        drop(self.environment.insert(key.as_ref().to_owned(), env));
+        drop(self.environment.insert(key.to_owned(), env));
         Ok(self)
     }
 
