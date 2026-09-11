@@ -146,4 +146,18 @@ impl<'a> Guest<'a> {
     pub fn try_wait(&self) -> Result<Option<ExitStatus>, Error> {
         Ok(self.inner.try_wait()?)
     }
+
+    /// Tear down the environment of the guest process and capture its exit
+    /// status.
+    ///
+    /// This method allows the caller to observe any errors that may occur when
+    /// tearing the guest process down.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if tearing down the guest process or anything
+    /// associated with its environment fails.
+    pub fn teardown(self) -> Result<ExitStatus, Error> {
+        Ok(self.inner.teardown()?)
+    }
 }

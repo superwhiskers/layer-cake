@@ -452,8 +452,16 @@ pub(crate) enum BindMount {
 }
 
 /// Attributes applied to a mount.
-//TODO: should we just use [`MountAttrFlags`] instead of this custom structure?
-//FIXME: provide a builder interface to this in the future
+///
+/// By default, the strictest possible attributes are set:
+///
+/// - Read-only mount
+/// - No suid/sgid bits honored
+/// - No device file access
+/// - No binary execution
+/// - No symlink following
+//TODO: should we move this structure into meowix to make it something like
+//      rustix's `MountAttrFlags`?
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct MountAttributes {
     /// Make the mount read-only.
@@ -465,7 +473,7 @@ pub struct MountAttributes {
     /// Don't allow access to device files on this mount.
     no_devices: bool,
 
-    /// Don't allow programs to be executed from this filesystem.
+    /// Don't allow binaries to be executed from this filesystem.
     no_execution: bool,
 
     /// Don't follow symbolic links on this filesystem.
@@ -485,6 +493,37 @@ const impl Default for MountAttributes {
 }
 
 impl MountAttributes {
+    /// Whether the mount should be read-only.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Whether the mount should honor setuid bits, setgid bits, or file
+    /// capabilities.
+    pub fn no_setuid(mut self, no_setuid: bool) -> Self {
+        self.no_setuid = no_setuid;
+        self
+    }
+
+    /// Whether the mount should permit access to device files.
+    pub fn no_devices(mut self, no_devices: bool) -> Self {
+        self.no_devices = no_devices;
+        self
+    }
+
+    /// Whether the mount should allow binaries to be executed.
+    pub fn no_execution(mut self, no_execution: bool) -> Self {
+        self.no_execution = no_execution;
+        self
+    }
+
+    /// Whether the mount should allow following symbolic links.
+    pub fn no_symlink_folowing(mut self, no_symlink_following: bool) -> Self {
+        self.no_symlink_following = no_symlink_following;
+        self
+    }
+
     /// Converts this [`MountAttributes`] into `MOUNT_ATTR_*` flags.
     pub fn into_mount_attr(self) -> u32 {
         let mut mount_attr = 0;

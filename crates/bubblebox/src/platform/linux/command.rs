@@ -250,6 +250,9 @@ impl<'a> GuestInner<'a> {
         self.pid.into_raw() as _
     }
 
+    //FIXME: do some verification on the ppoll event used in `wait` and
+    //       `try_wait`
+
     /// Wait on the guest process to exit completely.
     pub(crate) fn wait(&self) -> Result<ExitStatus, Error> {
         let mut fds = [PollFd::new(self.pidfd.as_fd(), linux::POLLIN as i16)];
@@ -291,6 +294,48 @@ impl<'a> GuestInner<'a> {
                 .exit_code,
         )))
     }
+
+    /// Tear down the environment of the guest process and capture its exit
+    /// status.
+    ///
+    /// Sends `SIGKILL` to the guest process, then performs cgroup cleanup, if
+    /// necessary.
+    ///
+    /// This method exists to provide a non-consuming teardown primitive which
+    /// can be used by the destructor as well as the explicit teardown method.
+    fn teardown_internal(&mut self) -> Result<ExitStatus, Error> {
+        //NOTE: we first kill the process to ensure the cgroup destructor is
+        //     able to remove the cgroup if it wants to
+        syscalls::pidfd_send_signal(
+            self.pidfd.as_fd(),
+            linux::SIGKILL as i32,
+            0,
+        )
+        .wrap_error::<CommandError>()?;
+
+        //NOTE: we order this here to use the poll to ensure the process has
+        //      actually exited. i'm not sure if this is necessary but it seems
+        //      more robust
+        let status = self.wait()?;
+
+        if let Some(cgroups_destructor) = self.cgroups_destructor.take() {
+            cgroups_destructor()?;
+        }
+
+        Ok(status)
+    }
+
+    /// Tear down the environment of the guest process and capture its exit
+    /// status.
+    ///
+    /// Sends `SIGKILL` to the guest process, then performs cgroup cleanup, if
+    /// necessary.
+    ///
+    /// This method allows the caller to observe any errors that may occur when
+    /// tearing the guest process down.
+    pub(crate) fn teardown(mut self) -> Result<ExitStatus, Error> {
+        self.teardown_internal()
+    }
 }
 
 impl fmt::Debug for GuestInner<'_> {
@@ -301,10 +346,7 @@ impl fmt::Debug for GuestInner<'_> {
 
 impl Drop for GuestInner<'_> {
     fn drop(&mut self) {
-        if let Some(cgroups_destructor) = self.cgroups_destructor.take() {
-            //NOTE: we can't exactly error here, so we just run it and hope it
-            //      worked. logging might be useful
-            let _ignored = cgroups_destructor();
-        }
+        //NOTE: we can't error here, so we just run it and hope it worked
+        let _ignored = self.teardown_internal();
     }
 }

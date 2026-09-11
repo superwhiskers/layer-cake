@@ -868,8 +868,7 @@ where
         attr_set: (linux::MOUNT_ATTR_RDONLY
             | linux::MOUNT_ATTR_NOSUID
             | linux::MOUNT_ATTR_NODEV
-            | linux::MOUNT_ATTR_NOEXEC
-            | linux::MOUNT_ATTR_NOSYMFOLLOW)
+            | linux::MOUNT_ATTR_NOEXEC)
             .into(),
         attr_clr: 0,
         propagation: 0,

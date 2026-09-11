@@ -43,6 +43,7 @@ use std::{
     env, ffi,
     fs::File,
     io::Read,
+    os::unix::process::ExitStatusExt,
     process::{self, ExitCode},
 };
 use zip::ZipArchive;
@@ -536,7 +537,10 @@ fn main() -> anyhow::Result<ExitCode> {
 
     Ok(ExitCode::from(if let Some(code) = result.code() {
         code as u8
+    } else if let Some(code) = result.signal() {
+        //NOTE: this is the convention many shells use to report signals
+        code as u8 + 128
     } else {
-        0
+        unreachable!("`wait` should not return when a child process is stopped")
     }))
 }
