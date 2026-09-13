@@ -21,7 +21,7 @@ fn last_errno() -> Errno {
     let errno_location = unsafe { libc::__errno_location() };
 
     //SAFETY: we're dereferencing a location that by the lsb, must exist
-    Errno::from_raw_os_error(unsafe { *errno_location })
+    Errno::from_raw_os_error(unsafe { *errno_location }).unwrap_or(Errno::IO)
 }
 
 /// Helper macro for generating syscall wrappers with fixed argument counts.

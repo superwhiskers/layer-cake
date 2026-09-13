@@ -117,6 +117,11 @@ impl Mount {
 
     /// Read-only mapping of a directory from the host to the guest, preserving
     /// ownership and permissions.
+    ///
+    /// # Notes
+    ///
+    /// This mount will be recursive. If that is not desired, use
+    /// [`Mount::bind_directory`].
     #[must_use]
     pub fn read_only_directory(fd: HostDirectory) -> Self {
         Self::new(MountInner::Bind(BindMount::Directory {
@@ -128,12 +133,17 @@ impl Mount {
                 no_execution: false,
                 no_symlink_following: false,
             },
-            is_recursive: false,
+            is_recursive: true,
         }))
     }
 
     /// Read-write mapping of a directory from the host to the guest, preserving
     /// ownership and permissions.
+    ///
+    /// # Notes
+    ///
+    /// This mount will be recursive. If that is not desired, use
+    /// [`Mount::bind_directory`].
     #[must_use]
     pub fn read_write_directory(fd: HostDirectory) -> Self {
         Self::new(MountInner::Bind(BindMount::Directory {
@@ -145,7 +155,7 @@ impl Mount {
                 no_execution: false,
                 no_symlink_following: false,
             },
-            is_recursive: false,
+            is_recursive: true,
         }))
     }
 

@@ -26,7 +26,7 @@ impl IntNotAllOnes {
     pub const fn new(value: ffi::c_int) -> Option<Self> {
         #[allow(non_contiguous_range_endpoints)]
         if let ..-1 | 0.. = value {
-            // SAFETY: The pattern check established that `value != -1`.
+            //SAFETY: we checked it wasn't `-1`
             Some(unsafe { Self::new_unchecked(value) })
         } else {
             None
@@ -38,16 +38,13 @@ impl IntNotAllOnes {
     /// `value` must not be `-1`.
     #[inline]
     pub const unsafe fn new_unchecked(value: ffi::c_int) -> Self {
-        // SAFETY: Required by the caller.
+        //SAFETY: caller asserts value is not `-1`
         unsafe { mem::transmute(value) }
     }
 
     #[inline]
     pub const fn as_inner(self) -> ffi::c_int {
-        // SAFETY: Every valid pattern-type value is valid as its base type.
-        //
-        // Avoid `self.0`; rustc's implementation does the same because field
-        // projection from pattern types currently has restrictions/regressions.
+        //SAFETY: valid pattern type values are equivalent to their base type
         unsafe { mem::transmute(self) }
     }
 }

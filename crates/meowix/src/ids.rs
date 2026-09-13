@@ -2,7 +2,11 @@
 
 //! Wrappers over IDs used by the kernel for processes, users, and groups.
 
-use core::num::NonZero;
+use core::{
+    fmt,
+    hash::{Hash, Hasher},
+    mem, pattern_type,
+};
 use linux_raw_sys::general as linux;
 
 /// User ID type used by the kernel.
@@ -35,6 +39,8 @@ impl Uid {
     /// This value must not be `-1`.
     #[inline]
     pub const unsafe fn from_raw_unchecked(value: RawUid) -> Self {
+        debug_assert!(value != RawUid::MAX, "a user id must not be `-1`");
+
         Self(value)
     }
 
@@ -71,6 +77,8 @@ impl Gid {
     /// This value must not be `-1`.
     #[inline]
     pub const unsafe fn from_raw_unchecked(value: RawGid) -> Self {
+        debug_assert!(value != RawGid::MAX, "a group id must not be `-1`");
+
         Self(value)
     }
 
@@ -86,46 +94,61 @@ impl Gid {
     }
 }
 
-/// Wrapper over a nonzero process ID.
+/// Wrapper over a positive process ID.
 #[repr(transparent)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
-pub struct Pid(NonZero<RawPid>);
+#[derive(Copy, Clone)]
+pub struct Pid(pattern_type!(RawPid is 1..));
+
+impl fmt::Debug for Pid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Pid").field(&self.into_raw()).finish()
+    }
+}
+
+impl PartialEq for Pid {
+    fn eq(&self, other: &Pid) -> bool {
+        self.into_raw() == other.into_raw()
+    }
+}
+
+impl Eq for Pid {}
+
+impl Hash for Pid {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        self.into_raw().hash(state)
+    }
+}
 
 impl Pid {
     /// Access the raw process ID value.
     #[inline]
     pub const fn into_raw(self) -> RawPid {
-        self.0.get()
+        //SAFETY: valid pattern type values are equivalent to their base type
+        unsafe { mem::transmute(self) }
     }
 
-    /// Access the raw process ID value as a nonzero value.
-    #[inline]
-    pub const fn into_raw_nonzero(self) -> NonZero<RawPid> {
-        self.0
-    }
-
-    /// Construct a process ID without checking that it is nonzero.
+    /// Construct a process ID without checking the invariants.
     ///
     /// # Safety
     ///
-    /// The value must not be zero.
+    /// The value must be greater than zero.
     #[inline]
     pub const unsafe fn from_raw_unchecked(value: RawPid) -> Self {
-        //SAFETY: caller has asserted the correctness of this
-        Self(unsafe { NonZero::<RawPid>::new_unchecked(value) })
+        debug_assert!(value.is_positive(), "a pid must be greater than zero");
+
+        //SAFETY: caller asserts value is in the specified range
+        unsafe { mem::transmute(value) }
     }
 
-    /// Construct a process ID from a nonzero value.
-    #[inline]
-    pub const fn from_raw_nonzero(value: NonZero<RawPid>) -> Self {
-        Self(value)
-    }
-
-    /// Construct a process ID, checking that it is not zero.
+    /// Construct a process ID, checking that it is greater than zero.
     #[inline]
     pub const fn from_raw(value: RawPid) -> Option<Self> {
-        if let Some(value) = NonZero::<RawPid>::new(value) {
-            Some(Self(value))
+        if let 1.. = value {
+            //SAFETY: we just checked it is in the range
+            Some(unsafe { Self::from_raw_unchecked(value) })
         } else {
             None
         }

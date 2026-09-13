@@ -36,7 +36,9 @@ macro_rules! fixed_syscall {
             }
 
             if out < 0 {
-                Err(Errno(out as u16))
+                //SAFETY: the cast is guaranteed to result in a value in the range
+                //        0xf001..=0xffff due to the check above
+                Err(unsafe { Errno::from_u16_unchecked(out as u16) })
             } else {
                 Ok(out as ffi::c_ulong)
             }

@@ -44,6 +44,10 @@ pub(crate) struct CommandInner {
     pub(super) environment: HashMap<OsString, CString>,
 
     /// Arguments to pass to the program.
+    ///
+    /// This is stored as raw pointers to C strings as [`CString`] is not
+    /// guaranteed to be equivalent to `*const ffi::c_char`, and `execveat(2)`
+    /// expects the latter.
     pub(super) arguments: Vec<*const ffi::c_char>,
 
     /// Path of the executable within the sandbox environment.
@@ -303,7 +307,10 @@ impl<'a> GuestInner<'a> {
     ///
     /// This method exists to provide a non-consuming teardown primitive which
     /// can be used by the destructor as well as the explicit teardown method.
-    fn teardown_internal(&mut self) -> Result<ExitStatus, Error> {
+    fn terminate_internal(&mut self) -> Result<ExitStatus, Error> {
+        //FIXME: continue onward after sending the signal up to the cgroup
+        //       destructor, then report errors together
+
         //NOTE: we first kill the process to ensure the cgroup destructor is
         //     able to remove the cgroup if it wants to
         syscalls::pidfd_send_signal(
@@ -333,8 +340,8 @@ impl<'a> GuestInner<'a> {
     ///
     /// This method allows the caller to observe any errors that may occur when
     /// tearing the guest process down.
-    pub(crate) fn teardown(mut self) -> Result<ExitStatus, Error> {
-        self.teardown_internal()
+    pub(crate) fn terminate(mut self) -> Result<ExitStatus, Error> {
+        self.terminate_internal()
     }
 }
 
@@ -347,6 +354,6 @@ impl fmt::Debug for GuestInner<'_> {
 impl Drop for GuestInner<'_> {
     fn drop(&mut self) {
         //NOTE: we can't error here, so we just run it and hope it worked
-        let _ignored = self.teardown_internal();
+        let _ignored = self.terminate_internal();
     }
 }

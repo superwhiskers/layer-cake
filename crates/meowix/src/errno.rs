@@ -5,14 +5,19 @@
 //! This module implements a wrapper over the errno value returned from system
 //! calls on Linux.
 
-use core::{error, fmt};
+use core::{
+    error, fmt,
+    hash::{Hash, Hasher},
+    mem, pattern_type,
+};
 
 /// Error value.
 ///
 /// Akin to rustix, we store it negated to avoid the conversion cost from
 /// syscalls.
-#[derive(Eq, PartialEq, Hash, Copy, Clone)]
-pub struct Errno(pub(crate) u16);
+#[repr(transparent)]
+#[derive(Copy, Clone)]
+pub struct Errno(pattern_type!(u16 is 0xf001..=0xffff));
 
 impl fmt::Debug for Errno {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -35,25 +40,70 @@ impl fmt::Display for Errno {
     }
 }
 
+impl PartialEq for Errno {
+    fn eq(&self, other: &Errno) -> bool {
+        self.into_u16() == other.into_u16()
+    }
+}
+
+impl Eq for Errno {}
+
+impl Hash for Errno {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: Hasher,
+    {
+        self.into_u16().hash(state)
+    }
+}
+
 impl error::Error for Errno {}
 
 impl Errno {
     /// Extract the raw OS error number.
     #[inline]
     pub const fn raw_os_error(self) -> i32 {
-        (self.0 as i16 as i32).wrapping_neg()
+        (self.into_u16() as i16 as i32).wrapping_neg()
     }
 
     /// Construct an [`Errno`] from the given os error number.
     #[inline]
-    pub const fn from_raw_os_error(raw: i32) -> Self {
+    pub const fn from_raw_os_error(raw: i32) -> Option<Self> {
         Self::from_errno(raw as u32)
+    }
+
+    /// Convert the internal pattern type into a [`u16`].
+    #[inline]
+    pub(crate) const fn into_u16(self) -> u16 {
+        //SAFETY: valid pattern type values are equivalent to their base type
+        unsafe { mem::transmute(self) }
+    }
+
+    /// Construct an [`Errno`] without checking a [`u16`] is valid according to
+    /// the pattern type.
+    ///
+    /// # Safety
+    ///
+    /// `value` must be in the range `0xf001..=0xffff`.
+    #[inline]
+    pub(crate) const unsafe fn from_u16_unchecked(raw: u16) -> Self {
+        debug_assert!(raw >= 0xf001, "`value` must be in 0xf001..=0xffff");
+
+        //SAFETY: caller asserts value is in the specified range
+        unsafe { mem::transmute(raw) }
     }
 
     /// Construct an [`Errno`] from a C errno.
     #[inline]
-    const fn from_errno(raw: u32) -> Self {
-        Self(raw.wrapping_neg() as u16)
+    const fn from_errno(raw: u32) -> Option<Self> {
+        let encoded = raw.wrapping_neg() as u16;
+
+        if let 0xf001..=0xffff = encoded {
+            //SAFETY: we just checked it is in the range
+            Some(unsafe { Self::from_u16_unchecked(encoded) })
+        } else {
+            None
+        }
     }
 }
 
@@ -77,7 +127,7 @@ macro_rules! errno_variants {
         /// `
         #[doc = stringify!($error)]
         /// `
-        pub const $name: Self = Self::from_errno(linux_raw_sys::errno::$error);
+        pub const $name: Self = Self::from_errno(linux_raw_sys::errno::$error).unwrap();
     };
 }
 

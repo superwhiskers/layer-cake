@@ -157,7 +157,7 @@ impl<'a> Guest<'a> {
     ///
     /// This method errors if tearing down the guest process or anything
     /// associated with its environment fails.
-    pub fn teardown(self) -> Result<ExitStatus, Error> {
-        Ok(self.inner.teardown()?)
+    pub fn terminate(self) -> Result<ExitStatus, Error> {
+        Ok(self.inner.terminate()?)
     }
 }

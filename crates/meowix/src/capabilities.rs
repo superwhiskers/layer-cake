@@ -40,7 +40,7 @@ pub fn drop_bounding_set(
 ///
 /// # Notes
 ///
-/// As with [`PR_CAPBSET_DROP(2const)`]---wrapped in
+/// As with `PR_CAPBSET_DROP(2const)`---wrapped in
 /// [`drop_bounding_set`]---[`Errno::INVAL`] indicates that a requested
 /// capability was not known to the kernel. This is usually not a problem, but
 /// it is propagated in the event that it is.

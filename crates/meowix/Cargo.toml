@@ -14,7 +14,7 @@ linux-raw-sys.workspace = true
 bytemuck.workspace = true
 bitflags.workspace = true
 
-[target.'cfg(all(target_os = "linux", not(target_arch = "x86_64")))'.dependencies]
+[target.'cfg(all(target_os = "linux", not(any(target_arch = "x86_64", target_arch = "aarch64"))))'.dependencies]
 libc.workspace = true
 
 [features]

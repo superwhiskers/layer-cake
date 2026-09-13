@@ -2,7 +2,7 @@
 
 //! Error representation for syscalls and netlink calls.
 
-use core::{error, fmt};
+use core::{error, ffi, fmt};
 
 #[cfg(feature = "alloc")]
 use alloc::string::FromUtf8Error;
@@ -40,6 +40,9 @@ pub enum Netlink {
     /// Errno value.
     Errno(Errno),
 
+    /// Invalid `NLMSG_ERROR` error value.
+    InvalidError(ffi::c_int),
+
     /// Syscall error.
     Syscall(SyscallError),
 }
@@ -70,6 +73,9 @@ impl fmt::Display for Netlink {
                 f.write_str("timed out while waiting for an ACK")
             }
             Self::Errno(e) => write!(f, "netlink error: {e}"),
+            Self::InvalidError(e) => {
+                write!(f, "invalid netlink `NLMSG_ERROR` error: {e}")
+            }
             Self::Syscall(e) => write!(f, "syscall error: {e}"),
         }
     }
@@ -407,7 +413,7 @@ impl From<u8> for Syscall {
     }
 }
 
-/// An [`core::ffi::CStr`] conversion buffer was too small.
+/// An [`ffi::CStr`] conversion buffer was too small.
 #[derive(Copy, Clone, Debug)]
 pub struct CStrBufferTooSmall;
 
@@ -432,14 +438,14 @@ impl fmt::Display for IncompleteWrite {
 impl error::Error for IncompleteWrite {}
 
 /// Error that may be converted to by [`CStrBufferTooSmall`] and
-/// [`core::ffi::FromBytesWithNulError`] for convenience.
+/// [`ffi::FromBytesWithNulError`] for convenience.
 #[derive(Copy, Clone, Debug)]
 pub enum WithCStrError {
-    /// [`core::ffi::CStr`] buffer was too small.
+    /// [`ffi::CStr`] buffer was too small.
     CStrBufferTooSmall,
 
-    /// Type being converted to a [`core::ffi::CStr`] was invalid.
-    FromBytesWithNulError(core::ffi::FromBytesWithNulError),
+    /// Type being converted to a [`ffi::CStr`] was invalid.
+    FromBytesWithNulError(ffi::FromBytesWithNulError),
 }
 
 impl fmt::Display for WithCStrError {
@@ -463,8 +469,8 @@ impl From<CStrBufferTooSmall> for WithCStrError {
     }
 }
 
-impl From<core::ffi::FromBytesWithNulError> for WithCStrError {
-    fn from(error: core::ffi::FromBytesWithNulError) -> Self {
+impl From<ffi::FromBytesWithNulError> for WithCStrError {
+    fn from(error: ffi::FromBytesWithNulError) -> Self {
         Self::FromBytesWithNulError(error)
     }
 }

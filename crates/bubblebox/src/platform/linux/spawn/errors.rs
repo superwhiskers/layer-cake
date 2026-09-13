@@ -307,7 +307,8 @@ impl From<PostSpawnGuestWire> for Result<(), PostSpawnGuest> {
             v if v == u8::MAX - 1 => {
                 Err(PostSpawnGuest::Syscall(SyscallError::new(
                     subtag.into(),
-                    Errno::from_raw_os_error(value),
+                    Errno::from_raw_os_error(value)
+                        .ok_or(PostSpawnGuest::InvalidWireFormat)?,
                 )))
             }
             v if v == u8::MAX - 2 => {
@@ -324,13 +325,15 @@ impl From<PostSpawnGuestWire> for Result<(), PostSpawnGuest> {
                     }))
                 } else if subtag == u8::MAX {
                     Err(PostSpawnGuest::Netlink(Netlink::Errno(
-                        Errno::from_raw_os_error(value),
+                        Errno::from_raw_os_error(value)
+                            .ok_or(PostSpawnGuest::InvalidWireFormat)?,
                     )))
                 } else {
                     Err(PostSpawnGuest::Netlink(Netlink::Syscall(
                         SyscallError::new(
                             subtag.into(),
-                            Errno::from_raw_os_error(value),
+                            Errno::from_raw_os_error(value)
+                                .ok_or(PostSpawnGuest::InvalidWireFormat)?,
                         ),
                     )))
                 }

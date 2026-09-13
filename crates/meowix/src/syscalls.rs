@@ -151,8 +151,8 @@ const _: () = {
 ///
 /// # Safety
 ///
-/// See the manpage, and the safety disclaimer on `Policy::clone_into`. There
-/// are too many invariants to detail here right now.
+/// Refer to the manpage for information on the potential hazards with making
+/// this syscall. There is too much to detail here.
 #[inline]
 pub unsafe fn clone3(
     args: impl Borrow<linux::clone_args>,
@@ -925,8 +925,8 @@ pub fn setns(fd: impl AsFd, nstype: ffi::c_int) -> Result<(), SyscallError> {
 ///
 /// # Safety
 ///
-/// If using [`linux::CLONE_FILES`], the caller must ensure that this thread
-/// does not attempt to use file descriptors from other threads.
+/// Refer to the manpage for information on the potential hazards with making
+/// this syscall. There is too much to detail here.
 #[inline]
 pub unsafe fn unshare(flags: ffi::c_int) -> Result<(), SyscallError> {
     //SAFETY: the caller asserts that if they are using `CLONE_FILES` that this
@@ -1346,7 +1346,7 @@ pub fn exit(status: ffi::c_int) -> ! {
 /// # Safety
 ///
 /// It is the caller's responsibility to ensure that the specified file
-/// descriptors are 1) open and 2) not expected to be open if not called with
+/// descriptors are not expected to be open if called without
 /// `CLOSE_RANGE_CLOEXEC`.
 #[inline]
 pub unsafe fn close_range(

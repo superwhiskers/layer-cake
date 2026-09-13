@@ -74,6 +74,13 @@ pub(super) fn parse_controllers(
 /// There are interface files other than those covered in this structure. This
 /// structure only contains those which make sense to set prior to spawning
 /// processes.
+///
+/// # Notes
+///
+/// The policy is not validated prior to it being instantiated. Callers are
+/// responsible for ensuring that the final policy is valid and handling any
+/// instantiation errors. In particular, the set of requested controllers are
+/// not checked to be threaded if thread mode is requested.
 #[derive(Clone, Debug, Default)]
 pub struct Policy {
     /// Core configuration options.
