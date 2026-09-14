@@ -11,12 +11,13 @@
 //TODO: try to make the builder use `&mut self` instead of `self`. it isn't
 //      super important right now, though
 
+use linux_raw_sys::ptrace as linux_ptrace;
 use meowix::{
     capabilities::CapabilitySet,
     syscalls,
     util::{Cwd, PATH_MAX},
 };
-use std::{ptr, slice};
+use std::{borrow::Cow, ptr, slice};
 
 use super::{
     cgroups::{self, Cgroups, NullCgroups, OwnedFdCgroups},
@@ -29,9 +30,6 @@ use errors::Policy as PolicyError;
 use fd::FdPolicy;
 use mounts::MountTree;
 use namespace::Namespaces;
-
-#[cfg(feature = "seccomp")]
-use seccompiler::SeccompFilter;
 
 #[cfg(feature = "systemd-cgroups")]
 use super::cgroups::{SystemdCgroups, SystemdState};
@@ -64,10 +62,8 @@ pub struct Policy<'a, CgroupsBackend> {
     /// Whether to create a new session using `setsid(2)`.
     pub(super) new_session: bool,
 
-    /// Seccomp policy.
-    //TODO: make this not have a hard dependency upon seccompiler to work
-    #[cfg(feature = "seccomp")]
-    pub(super) seccomp: Option<SeccompFilter>,
+    /// Seccomp filter.
+    pub(super) seccomp_filter: Option<Cow<'a, [linux_ptrace::sock_filter]>>,
 }
 
 impl<'a, CgroupsBackend> Default for Policy<'a, CgroupsBackend>
@@ -82,9 +78,9 @@ where
             target_capabilities: Default::default(),
             file_descriptors: Default::default(),
             new_session: true,
-            //FIXME: provide a strict default policy
-            #[cfg(feature = "seccomp")]
-            seccomp: None,
+            //FIXME: provide a strict default filter. this is likely quite
+            //       difficult
+            seccomp_filter: None,
         }
     }
 }
@@ -98,8 +94,8 @@ impl<'a> Policy<'a, NullCgroups> {
     /// This should not be used for potentially hostile programs. Do not use
     /// this if the cgroups policy represents a security boundary for the
     /// application. It will not be enforced.
-    pub fn null_cgroups_unenforced(mut self) -> Self {
-        self.cgroups = Cgroups::null_unenforced();
+    pub fn null_cgroups(mut self) -> Self {
+        self.cgroups = Cgroups::null();
         self
     }
 
@@ -315,5 +311,24 @@ where
         self
     }
 
-    //TODO: seccomp configuration needs to be added
+    /// Set a seccomp policy for the sandbox.
+    ///
+    /// # Notes
+    ///
+    /// In order for the filter to not prevent execution when spawning a process
+    /// as pid 1, it must allow the `execveat(2)` syscall. No other syscalls are
+    /// required in this execution mode.
+    pub fn seccomp_filter(
+        mut self,
+        filter: impl Into<Cow<'a, [linux_ptrace::sock_filter]>>,
+    ) -> Self {
+        self.seccomp_filter = Some(filter.into());
+        self
+    }
+
+    /// Clear the seccomp filter, if one was set.
+    pub fn clear_seccomp_filter(mut self) -> Self {
+        self.seccomp_filter = None;
+        self
+    }
 }

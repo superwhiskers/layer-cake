@@ -12,7 +12,7 @@ use core::{
 };
 use linux_raw_sys::{
     general::{self as linux, fsconfig_command as fsconfig},
-    ioctl, net as linux_net, netlink, prctl,
+    ioctl, net as linux_net, netlink, prctl, ptrace as linux_ptrace,
 };
 
 use crate::{
@@ -1520,4 +1520,56 @@ pub fn fcntl_dupfd_cloexec(oldfd: impl AsFd) -> Result<OwnedFd, SyscallError> {
 
     //SAFETY: we know this is valid by the syscall having not errored
     Ok(unsafe { OwnedFd::from_raw_fd(newfd as ffi::c_int) })
+}
+
+/// `seccomp(2)` with `SECCOMP_SET_MODE_STRICT`.
+#[inline]
+pub fn seccomp_set_mode_strict() -> Result<(), SyscallError> {
+    //SAFETY: this call is valid
+    let _ = unsafe {
+        syscall3(
+            abi::SECCOMP,
+            Arg::from_uint(linux_ptrace::SECCOMP_SET_MODE_STRICT),
+            Arg::from_uint(0),
+            Arg::from_ptr(ptr::null::<ffi::c_void>()),
+        )
+        .wrap_syscall(Syscall::Seccomp)?
+    };
+
+    Ok(())
+}
+
+/// `seccomp(2)` with `SECCOMP_SET_MODE_FILTER`.
+///
+/// # Errors
+///
+/// Beyond standard errors returned by `seccomp(2)`, this function errors with
+/// [`EINVAL`](Errno::INVAL) if the length of `filter` does not fit into a
+/// `u16`.
+#[inline]
+pub fn seccomp_set_mode_filter(
+    filter: &[linux_ptrace::sock_filter],
+) -> Result<(), SyscallError> {
+    let sock_fprog = linux_ptrace::sock_fprog {
+        len: filter
+            .len()
+            .try_into()
+            //NOTE: this seems like the most "correct" way to propagate this to
+            //      the caller
+            .map_err(|_| SyscallError::new(Syscall::Seccomp, Errno::INVAL))?,
+        filter: filter.as_ptr().cast_mut(),
+    };
+
+    //SAFETY: arguments are guaranteed to be valid by type invariants
+    let _ = unsafe {
+        syscall3(
+            abi::SECCOMP,
+            Arg::from_uint(linux_ptrace::SECCOMP_SET_MODE_FILTER),
+            Arg::from_uint(0),
+            Arg::from_ptr(&sock_fprog),
+        )
+        .wrap_syscall(Syscall::Seccomp)?
+    };
+
+    Ok(())
 }

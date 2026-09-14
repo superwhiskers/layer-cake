@@ -284,8 +284,9 @@ where
             let wire_success: PostSpawnGuestWire = Ok(()).into();
 
             //FIXME: move the success write into the spawn action code so that
-            //       the only syscall performed after is execveat (in the case
-            //       of `SpawnAction::Exec`) (this is a minor robustness fix)
+            //       the only syscalls performed after is seccomp and execveat
+            //       (in the case of `SpawnAction::Exec`) (this is a minor
+            //       robustness fix)
 
             //NOTE: if this errors we can't really do anything, just continue
             let _ = guest_pipe.write_all(bytemuck::bytes_of(&wire_success));
@@ -314,6 +315,11 @@ where
                             policy.target_capabilities,
                         )
                         .map_err(Into::into)?;
+
+                        if let Some(ref filter) = policy.seccomp_filter {
+                            syscalls::seccomp_set_mode_filter(filter.as_ref())
+                                .map_err(Into::into)?;
+                        }
 
                         //SAFETY: caller asserts the closure assembled
                         //        null-terminated arrays for argv, envp
@@ -746,18 +752,17 @@ where
                         PATH_COMPONENT_MAX
                     }, _, PostSpawnGuestError>(
                         |file_name| {
-                            if !matches!(
-                                syscalls::statx(
-                                    &parent_fd,
-                                    file_name,
-                                    linux::AT_SYMLINK_NOFOLLOW as i32,
-                                    0,
-                                ),
-                                Err(e) if e.error() == Errno::NOENT
+                            match syscalls::statx(
+                                &parent_fd,
+                                file_name,
+                                linux::AT_SYMLINK_NOFOLLOW as i32,
+                                0,
                             ) {
                                 //TODO: relax this restriction by truncating the
                                 //      existing file and chmod-ing it
-                                Err(PostSpawnGuestOtherError::DestinationExists)?;
+                                Ok(_) => Err(PostSpawnGuestOtherError::DestinationExists)?,
+                                Err(e) if e.error() == Errno::NOENT => (),
+                                Err(e)  => return Err(e.into()),
                             }
 
                             retry_on_interrupt!({
@@ -796,17 +801,16 @@ where
                     PATH_COMPONENT_MAX
                 }, _, PostSpawnGuestError>(
                     |file_name| {
-                        if !matches!(
-                            syscalls::statx(
-                                &parent_fd,
-                                file_name,
-                                linux::AT_SYMLINK_NOFOLLOW as i32,
-                                0,
-                            ),
-                            Err(e) if e.error() == Errno::NOENT
+                        match syscalls::statx(
+                            &parent_fd,
+                            file_name,
+                            linux::AT_SYMLINK_NOFOLLOW as i32,
+                            0,
                         ) {
                             //TODO: relax this
-                            Err(PostSpawnGuestOtherError::DestinationExists)?;
+                            Ok(_) => Err(PostSpawnGuestOtherError::DestinationExists)?,
+                            Err(e) if e.error() == Errno::NOENT => (),
+                            Err(e)  => return Err(e.into()),
                         }
 
                         source.inner.with_c_str::<{
@@ -841,17 +845,16 @@ where
                         |file_name| {
                             //FIXME: we definitely could remove this and leave it
                             //       alone
-                            if !matches!(
-                                syscalls::statx(
-                                    &parent_fd,
-                                    file_name,
-                                    linux::AT_SYMLINK_NOFOLLOW as i32,
-                                    0,
-                                ),
-                                Err(e) if e.error() == Errno::NOENT
+                            match syscalls::statx(
+                                &parent_fd,
+                                file_name,
+                                linux::AT_SYMLINK_NOFOLLOW as i32,
+                                0,
                             ) {
                                 //TODO: and relax this one
-                                Err(PostSpawnGuestOtherError::DestinationExists)?;
+                                Ok(_) => Err(PostSpawnGuestOtherError::DestinationExists)?,
+                                Err(e) if e.error() == Errno::NOENT => (),
+                                Err(e)  => return Err(e.into()),
                             }
 
                             syscalls::mkdirat(

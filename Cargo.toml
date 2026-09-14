@@ -12,7 +12,6 @@ resolver = "3"
 tracing = "0.1"
 http = "1"
 hyper-rustls = "0.27"
-seccompiler = "0.5"
 simd-json = "0.18"
 dbus = "0.9"
 bitflags = "2"
@@ -35,7 +34,7 @@ features = ["v4"]
 
 [workspace.dependencies.linux-raw-sys]
 version = "0.12"
-features = ["netlink", "net", "errno", "general", "ioctl", "prctl"]
+features = ["netlink", "net", "errno", "general", "ioctl", "prctl", "ptrace"]
 
 [workspace.dependencies.futures]
 version = "0.3"

@@ -15,10 +15,6 @@ bytemuck.workspace = true
 meowix.workspace = true
 itoa.workspace = true
 
-[dependencies.seccompiler]
-workspace = true
-optional = true
-
 [dependencies.dbus]
 workspace = true
 optional = true
@@ -37,9 +33,6 @@ default = []
 # Adds support for automatically acquiring a part of the cgroups hierarchy
 # through systemd
 systemd-cgroups = ["dep:dbus", "dep:libdbus-sys", "dep:uuid"]
-
-# Adds support for simpler seccomp initialization with the seccompiler crate.
-seccomp = ["dep:seccompiler"]
 
 [lints]
 workspace = true

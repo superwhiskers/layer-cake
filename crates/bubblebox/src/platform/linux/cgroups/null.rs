@@ -8,7 +8,7 @@ pub struct NullCgroups;
 
 impl Cgroups<NullCgroups> {
     /// Don't create a cgroups hierarchy.
-    pub fn null_unenforced() -> Self {
+    pub fn null() -> Self {
         Self::default()
     }
 }
