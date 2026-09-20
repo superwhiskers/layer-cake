@@ -20,7 +20,7 @@ use std::{
     collections::HashMap,
     ffi,
     ffi::{CString, OsStr, OsString},
-    fmt, mem,
+    fmt, hint, mem,
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
         process::ExitStatusExt,
@@ -254,29 +254,31 @@ impl<'a> GuestInner<'a> {
         self.pid.into_raw() as _
     }
 
-    //FIXME: do some verification on the ppoll event used in `wait` and
-    //       `try_wait`
-
     /// Wait on the guest process to exit completely.
     pub(crate) fn wait(&self) -> Result<ExitStatus, Error> {
-        let mut fds = [PollFd::new(self.pidfd.as_fd(), linux::POLLIN as i16)];
+        let mut fds = [PollFd::new(self.pidfd.as_fd(), 0)];
         let n_ready = retry_on_interrupt!({
             syscalls::ppoll(&mut fds, None::<linux::__kernel_timespec>)
         })
         .wrap_error::<CommandError>()?;
         debug_assert_eq!(n_ready, 1);
+        debug_assert_ne!(fds[0].revents() & linux::POLLHUP as ffi::c_short, 0);
 
-        Ok(ExitStatus::from_raw(
-            syscalls::pidfd_get_info(&self.pidfd)
-                .wrap_error::<CommandError>()?
-                .exit_code,
-        ))
+        let pidfd_info =
+            syscalls::pidfd_get_info_v0(&self.pidfd, syscalls::PIDFD_INFO_EXIT)
+                .wrap_error::<CommandError>()?;
+
+        if hint::likely(pidfd_info.mask & syscalls::PIDFD_INFO_EXIT != 0) {
+            Ok(ExitStatus::from_raw(pidfd_info.exit_code))
+        } else {
+            Err(CommandError::MissingInformation.into())
+        }
     }
 
     /// Attempt to capture the exit status of the guest process if it has
     /// already exited.
     pub(crate) fn try_wait(&self) -> Result<Option<ExitStatus>, Error> {
-        let mut fds = [PollFd::new(self.pidfd.as_fd(), linux::POLLIN as i16)];
+        let mut fds = [PollFd::new(self.pidfd.as_fd(), 0)];
         if retry_on_interrupt!({
             syscalls::ppoll(
                 &mut fds,
@@ -292,11 +294,17 @@ impl<'a> GuestInner<'a> {
             return Ok(None);
         }
 
-        Ok(Some(ExitStatus::from_raw(
-            syscalls::pidfd_get_info(&self.pidfd)
-                .wrap_error::<CommandError>()?
-                .exit_code,
-        )))
+        debug_assert_ne!(fds[0].revents() & linux::POLLHUP as ffi::c_short, 0);
+
+        let pidfd_info =
+            syscalls::pidfd_get_info_v0(&self.pidfd, syscalls::PIDFD_INFO_EXIT)
+                .wrap_error::<CommandError>()?;
+
+        if hint::likely(pidfd_info.mask & syscalls::PIDFD_INFO_EXIT != 0) {
+            Ok(Some(ExitStatus::from_raw(pidfd_info.exit_code)))
+        } else {
+            Err(CommandError::MissingInformation.into())
+        }
     }
 
     /// Tear down the environment of the guest process and capture its exit

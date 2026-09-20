@@ -26,6 +26,8 @@ use crate::{
     util::AtFd,
 };
 
+//FIXME: some of the below should be placed in a separate module
+
 /// Set the close-on-exec flag on syscalls instead of closing them.
 pub const CLOSE_RANGE_CLOEXEC: ffi::c_int = 1 << 2;
 
@@ -67,7 +69,7 @@ const PIDFD_GET_INFO_V0: usize = 0xc040_ff0b;
 
 /// Mask for [`PIDFD_GET_INFO_V0`] (and later revisions) to request the exit
 /// code of the process.
-const PIDFD_INFO_EXIT: u64 = 1 << 3;
+pub const PIDFD_INFO_EXIT: u64 = 1 << 3;
 
 /// Initial revision of the structure used by `PIDFD_GET_INFO`.
 #[repr(C)]
@@ -1460,12 +1462,12 @@ pub unsafe fn rt_sigprocmask(
 
 /// `ioctl(2)` on a pidfd to retrieve information about the process.
 #[inline]
-pub fn pidfd_get_info(fd: impl AsFd) -> Result<PidfdInfoV0, SyscallError> {
+pub fn pidfd_get_info_v0(
+    fd: impl AsFd,
+    mask: u64,
+) -> Result<PidfdInfoV0, SyscallError> {
     let mut out = PidfdInfoV0::default();
-
-    //NOTE: we don't need to set any of the other ones as the kernel returns
-    //      them regardless of the mask
-    out.mask = PIDFD_INFO_EXIT;
+    out.mask = mask;
 
     //SAFETY: `out` is valid, `fd` is a valid fd by it implementing [`AsFd`].
     let _ = unsafe {

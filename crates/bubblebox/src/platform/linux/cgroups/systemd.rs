@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//FIXME: add a separate phase to the cgroups setup that is set up immediately
-//       after the systemd unit is created so that we can tear it down on error
-
 use dbus::{
     arg::{RefArg, Variant},
     blocking::{Connection, Proxy, stdintf::org_freedesktop_dbus::Properties},
@@ -17,6 +14,7 @@ use meowix::{
     util::{Cwd, PATH_MAX, WithCStr, check_if_incomplete},
     write_checked,
 };
+use scopeguard::ScopeGuard;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -134,13 +132,33 @@ unsafe impl Backend for SystemdCgroups {
             (&unit_name, "fail", unit_properties, auxiliary),
         )?;
 
-        //NOTE: we may need to poll for unit creation or do something here to
-        //      ensure we aren't racing systemd's start job
+        //NOTE: by this point, we want to ensure that the unit is stopped on
+        //      error so we set up this guard that we later remove if it
+        //      succeeds
+        let unit_name = scopeguard::guard(unit_name, |unit_name| match systemd
+            .method_call::<(Path<'static>,), _, _, _>(
+                "org.freedesktop.systemd1.Manager",
+                "StopUnit",
+                (unit_name, "fail"),
+            ) {
+            Ok(_) => (),
+            Err(e)
+                if matches!(
+                    e.name(),
+                    Some("org.freedesktop.systemd1.NoSuchUnit")
+                ) =>
+            {
+                ()
+            }
+            //NOTE: we can't really do anything here. maybe logging in the
+            // future
+            Err(_e) => (),
+        });
 
         let (unit_path,): (Path<'static>,) = systemd.method_call(
             "org.freedesktop.systemd1.Manager",
             "GetUnit",
-            (&unit_name,),
+            (&*unit_name,),
         )?;
 
         let unit = Proxy::new(
@@ -172,7 +190,9 @@ unsafe impl Backend for SystemdCgroups {
             )
         })?;
 
-        //NOTE: same note about races here does apply
+        //NOTE: we may need to poll the unit start job in order for the
+        //      successive control group call to return a functioning cgroup
+        //      hierarchy that we control
 
         //NOTE: no idea why but the `&CStr` implementation for dbus' `Get`
         //      doesn't work here for some lifetime reason
@@ -299,7 +319,7 @@ unsafe impl Backend for SystemdCgroups {
                     root_fd,
                     settings_fd,
                     child_fd,
-                    unit_name,
+                    unit_name: ScopeGuard::into_inner(unit_name),
                 },
             };
         } else {

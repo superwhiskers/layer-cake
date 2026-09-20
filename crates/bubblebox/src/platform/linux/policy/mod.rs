@@ -14,13 +14,14 @@
 use linux_raw_sys::ptrace as linux_ptrace;
 use meowix::{
     capabilities::CapabilitySet,
+    fd::OwnedFd,
     syscalls,
     util::{Cwd, PATH_MAX},
 };
 use std::{borrow::Cow, ptr, slice};
 
 use super::{
-    cgroups::{self, Cgroups, NullCgroups, OwnedFdCgroups},
+    cgroups::{self, Cgroups, NullCgroups, OwnedFdCgroups, OwnedFdState},
     command::GuestInner,
     errors::Error,
     spawn::{self, SpawnAction, errors::PostSpawnGuest as PostSpawnGuestError},
@@ -126,6 +127,10 @@ impl<'a> Policy<'a, OwnedFdCgroups> {
     /// giving it to bubblebox. Do not modify the subtree externally upon giving
     /// it to bubblebox.
     ///
+    /// However, after bubblebox is finished with the subtree, the caller is
+    /// responsible for cleaning up after it. bubblebox will not remove it upon
+    /// either success or error.
+    ///
     /// ## Controllers
     ///
     /// Controllers requested by the caller's specified cgroups policy must be
@@ -144,6 +149,24 @@ impl<'a> Policy<'a, OwnedFdCgroups> {
     ) -> Self {
         self.cgroups = configure(Cgroups::new_fd());
         self
+    }
+
+    /// Executes the given [`Command`], sandboxed according to this policy with
+    /// the child process underneath the given cgroups hierarchy.
+    ///
+    /// The file descriptor provided for state must refer to a directory in the
+    /// cgroups hierarchy which is writeable by the process. See the
+    /// documentation of [`Policy::fd_cgroups`] for more details.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if setting up the sandbox fails.
+    pub fn spawn(
+        &self,
+        command: &Command,
+        settings_fd: OwnedFd,
+    ) -> Result<Guest<'_>, Error> {
+        self.spawn_with(command, OwnedFdState::new(settings_fd)?)
     }
 }
 

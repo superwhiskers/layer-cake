@@ -134,16 +134,49 @@ impl HostFile {
     /// directory and the file name, then opens a file descriptor to the parent
     /// directory.
     ///
-    /// # Warning
-    ///
-    /// This intentionally does not resolve symlinks. If symlink resolution is
-    /// desired, resolve it externally and pass the real path to this method.
-    ///
     /// # Errors
     ///
     /// TODO
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
-        Self::open_at(Cwd, path)
+        Self::open_at_internal::<0, 0>(Cwd, path)
+    }
+
+    /// Creates a new [`HostFile`] from the given [`Path`], opening the
+    /// file descriptor relative to the given path file descriptor.
+    ///
+    /// This method breaks apart the [`Path`] into the path of the parent
+    /// directory and the file name, then opens a file descriptor to the parent
+    /// directory.
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    pub fn open_at<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<0, 0>(relative_to, path)
+    }
+
+    /// Creates a new [`HostFile`] from the given [`Path`], opening the file
+    /// descriptor relative to the given path file descriptor without resolving
+    /// symlinks.
+    ///
+    /// This method breaks apart the [`Path`] into the path of the parent
+    /// directory and the file name, then opens a file descriptor to the parent
+    /// directory.
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    pub fn open_at_nofollow<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<
+            { linux::O_NOFOLLOW },
+            { linux::RESOLVE_NO_SYMLINKS },
+        >(relative_to, path)
     }
 
     /// Creates a new [`HostFile`] from the given [`Path`], opening the
@@ -153,15 +186,47 @@ impl HostFile {
     /// directory and the file name, then opens a file descriptor to the parent
     /// directory.
     ///
-    /// # Warning
+    /// # Errors
     ///
-    /// This intentionally does not resolve symlinks. If symlink resolution is
-    /// desired, resolve it externally and pass the real path to this method.
+    /// TODO
+    pub fn open_at_beneath<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<0, { linux::RESOLVE_BENEATH }>(
+            relative_to,
+            path,
+        )
+    }
+
+    /// Creates a new [`HostFile`] from the given [`Path`], opening the
+    /// file descriptor beneath the given path file descriptor without resolving
+    /// symlinks.
+    ///
+    /// This method breaks apart the [`Path`] into the path of the parent
+    /// directory and the file name, then opens a file descriptor to the parent
+    /// directory.
     ///
     /// # Errors
     ///
     /// TODO
-    pub fn open_at<'fd>(
+    pub fn open_at_beneath_nofollow<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<
+            { linux::O_NOFOLLOW },
+            { linux::RESOLVE_NO_SYMLINKS | linux::RESOLVE_BENEATH },
+        >(relative_to, path)
+    }
+
+    /// Implementation code used for file opening.
+    #[inline(always)]
+    fn open_at_internal<
+        'fd,
+        const OPEN_FLAGS: u32,
+        const RESOLVE_FLAGS: u32,
+    >(
         relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
     ) -> Result<Self, Error> {
@@ -195,14 +260,10 @@ impl HostFile {
                     &relative_to,
                     directory,
                     linux::open_how {
-                        flags: (linux::O_PATH
-                            | linux::O_CLOEXEC
-                            | linux::O_NOFOLLOW)
+                        flags: (linux::O_PATH | linux::O_CLOEXEC | OPEN_FLAGS)
                             as u64,
                         mode: 0,
-                        resolve: (linux::RESOLVE_NO_MAGICLINKS
-                            | linux::RESOLVE_NO_SYMLINKS
-                            | linux::RESOLVE_BENEATH)
+                        resolve: (linux::RESOLVE_NO_MAGICLINKS | RESOLVE_FLAGS)
                             as u64,
                     },
                 )
@@ -225,38 +286,22 @@ impl HostFile {
                 Ok(name.to_owned())
             })?;
 
-        Self::capture_identity(dirfd, name)
-    }
-
-    /// Opens a file descriptor to the specified file beneath the directory file
-    /// descriptor and bundles it into a host file structure.
-    ///
-    /// # Errors
-    ///
-    /// TODO
-    #[inline(always)]
-    fn capture_identity(dirfd: OwnedFd, name: CString) -> Result<Self, Error> {
         let fd = retry_on_interrupt!({
             syscalls::openat2(
                 dirfd.as_fd(),
                 &name,
                 linux::open_how {
-                    flags: (linux::O_PATH
-                        | linux::O_CLOEXEC
-                        | linux::O_NOFOLLOW) as u64,
+                    flags: (linux::O_PATH | linux::O_CLOEXEC | OPEN_FLAGS)
+                        as u64,
                     mode: 0,
-                    resolve: (linux::RESOLVE_NO_MAGICLINKS
-                        | linux::RESOLVE_NO_SYMLINKS
-                        | linux::RESOLVE_BENEATH)
+                    resolve: (linux::RESOLVE_NO_MAGICLINKS | RESOLVE_FLAGS)
                         as u64,
                 },
             )
         })
         .wrap_error::<PolicyError>()?;
 
-        if is_directory(dirfd.as_fd()).wrap_error::<PolicyError>()?
-            && !is_directory(fd.as_fd()).wrap_error::<PolicyError>()?
-        {
+        if !is_directory(fd.as_fd()).wrap_error::<PolicyError>()? {
             Ok(Self { dirfd, name, fd })
         } else {
             Err(PolicyError::NotAFile.into())
@@ -373,39 +418,83 @@ impl HostDirectory {
     /// TODO
     #[inline]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let fd = path
-            .as_ref()
-            .as_os_str()
-            .as_bytes()
-            .with_c_str::<{ PATH_MAX }, _, PolicyError>(|path| {
-                retry_on_interrupt!({
-                    syscalls::openat2(
-                        Cwd,
-                        path,
-                        linux::open_how {
-                            flags: (linux::O_PATH
-                                | linux::O_DIRECTORY
-                                | linux::O_CLOEXEC)
-                                as u64,
-                            mode: 0,
-                            resolve: (linux::RESOLVE_NO_MAGICLINKS) as u64,
-                        },
-                    )
-                })
-                .map_err(Into::into)
-            })?;
-
-        Self::new(fd)
+        Self::open_at_internal::<0, 0>(Cwd, path)
     }
 
     /// Creates a new [`HostDirectory`] from the given [`Path`], opening
-    /// the file descriptor beneath the given path file descriptor.
+    /// the file descriptor relative to the given path file descriptor.
     ///
     /// # Errors
     ///
     /// TODO
     #[inline]
     pub fn open_at<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<0, 0>(relative_to, path)
+    }
+
+    /// Creates a new [`HostDirectory`] from the given [`Path`] opening the file
+    /// descriptor relative to the given path file descriptor without resolving
+    /// symlinks.
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    #[inline]
+    pub fn open_at_nofollow<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<
+            { linux::O_NOFOLLOW },
+            { linux::RESOLVE_NO_SYMLINKS },
+        >(relative_to, path)
+    }
+
+    /// Creates a new [`HostDirectory`] from the given [`Path`] opening the file
+    /// descriptor beneath to the given path file descriptor.
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    #[inline]
+    pub fn open_at_beneath<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<0, { linux::RESOLVE_BENEATH }>(
+            relative_to,
+            path,
+        )
+    }
+
+    /// Creates a new [`HostDirectory`] from the given [`Path`] opening the file
+    /// descriptor beneath to the given path file descriptor without resolving
+    /// symlinks.
+    ///
+    /// # Errors
+    ///
+    /// TODO
+    #[inline]
+    pub fn open_at_beneath_nofollow<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<
+            { linux::O_NOFOLLOW },
+            { linux::RESOLVE_NO_SYMLINKS | linux::RESOLVE_BENEATH },
+        >(relative_to, path)
+    }
+
+    /// Implementation code used for directory opening.
+    #[inline(always)]
+    fn open_at_internal<
+        'fd,
+        const OPEN_FLAGS: u32,
+        const RESOLVE_FLAGS: u32,
+    >(
         relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
     ) -> Result<Self, Error> {
@@ -422,11 +511,12 @@ impl HostDirectory {
                         linux::open_how {
                             flags: (linux::O_PATH
                                 | linux::O_DIRECTORY
-                                | linux::O_CLOEXEC)
+                                | linux::O_CLOEXEC
+                                | OPEN_FLAGS)
                                 as u64,
                             mode: 0,
                             resolve: (linux::RESOLVE_NO_MAGICLINKS
-                                | linux::RESOLVE_BENEATH)
+                                | RESOLVE_FLAGS)
                                 as u64,
                         },
                     )

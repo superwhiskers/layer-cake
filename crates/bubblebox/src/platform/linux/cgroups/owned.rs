@@ -46,7 +46,11 @@ impl OwnedFdState {
     ///
     /// This part of the cgroups hierarchy will be used to write the cgroups
     /// configuration to. bubblebox will create a nested cgroup in which the
-    /// child process will be spawned.
+    /// child process will be spawned with a fixed name of `bubblebox-child`.
+    ///
+    /// The caller is responsible for handling the cgroup after bubblebox is
+    /// done with it. It will not remove or clean up after itself after it is
+    /// finished with the hierarchy.
     ///
     /// # Errors
     ///

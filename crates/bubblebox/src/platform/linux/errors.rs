@@ -113,6 +113,9 @@ pub enum Command {
     /// Syscall error.
     Syscall(SyscallError),
 
+    /// Kernel did not return requested information about the process.
+    MissingInformation,
+
     /// Environment variable key contained an equals (`=`) character.
     InvalidEnvironmentVariable,
 
@@ -127,6 +130,9 @@ impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Syscall(e) => write!(f, "syscall error: {e}"),
+            Self::MissingInformation => f.write_str(
+                "kernel did not return requested process information",
+            ),
             Self::InvalidEnvironmentVariable => f.write_str(
                 "an environment variable key contained the equals character",
             ),
