@@ -6,11 +6,10 @@
 //      cstrings directly, etc GuestLinuxExt
 //FIXME: attempt to remove the lifetime parameter from the child so that the
 //       policy can be destroyed while the child is executing
-//FIXME: builder and spawn support for environment, working directory + support
-//       in bbx
 
 use linux_raw_sys::general as linux;
 use meowix::{
+    errno::Errno,
     fd::{AsFd, OwnedFd},
     ids::Pid,
     retry_on_interrupt,
@@ -29,7 +28,13 @@ use std::{
     ptr,
 };
 
-use super::errors::{Command as CommandError, Error, ResultSyscallExt, Tag};
+use super::{
+    errors::{
+        Command as CommandError, Error,
+        GuestTermination as GuestTerminationError, ResultSyscallExt, Tag,
+    },
+    spawn::errors::PostSpawnHost,
+};
 use crate::{
     command::Command, errors::Error as CrateError, paths::Guest, sealed::Sealed,
 };
@@ -55,7 +60,6 @@ pub(crate) struct CommandInner {
 
     /// Working directory of the process within the sandbox.
     pub(super) working_directory: Option<Guest>,
-    //FIXME: add optional stdin, stdout, stderr
 }
 
 impl CommandInner {
@@ -241,7 +245,7 @@ pub(crate) struct GuestInner<'a> {
 
     /// Cgroups backend destructor.
     pub(super) cgroups_destructor:
-        Option<Box<dyn FnOnce() -> Result<(), Error> + 'a>>,
+        Option<Box<dyn FnOnce() -> Result<(), PostSpawnHost> + 'a>>,
     //TODO: hold an [`OwnedFd`] to the cgroups hierarchy and add a method to
     //      the backend trait that returns a `Option<(OwnedFd, Box<dyn FnOnce()
     //      -> Result<(), errors::Error>>)>` where the former is the fd to the
@@ -255,18 +259,24 @@ impl<'a> GuestInner<'a> {
     }
 
     /// Wait on the guest process to exit completely.
+    #[inline(always)]
     pub(crate) fn wait(&self) -> Result<ExitStatus, Error> {
+        Ok(self.wait_internal()?)
+    }
+
+    /// Implementation of wait which doesn't return the public-facing [`Error`]
+    fn wait_internal(&self) -> Result<ExitStatus, CommandError> {
         let mut fds = [PollFd::new(self.pidfd.as_fd(), 0)];
         let n_ready = retry_on_interrupt!({
             syscalls::ppoll(&mut fds, None::<linux::__kernel_timespec>)
-        })
-        .wrap_error::<CommandError>()?;
+        })?;
         debug_assert_eq!(n_ready, 1);
         debug_assert_ne!(fds[0].revents() & linux::POLLHUP as ffi::c_short, 0);
 
-        let pidfd_info =
-            syscalls::pidfd_get_info_v0(&self.pidfd, syscalls::PIDFD_INFO_EXIT)
-                .wrap_error::<CommandError>()?;
+        let pidfd_info = syscalls::pidfd_get_info_v0(
+            &self.pidfd,
+            syscalls::PIDFD_INFO_EXIT,
+        )?;
 
         if hint::likely(pidfd_info.mask & syscalls::PIDFD_INFO_EXIT != 0) {
             Ok(ExitStatus::from_raw(pidfd_info.exit_code))
@@ -316,28 +326,40 @@ impl<'a> GuestInner<'a> {
     /// This method exists to provide a non-consuming teardown primitive which
     /// can be used by the destructor as well as the explicit teardown method.
     fn terminate_internal(&mut self) -> Result<ExitStatus, Error> {
-        //FIXME: continue onward after sending the signal up to the cgroup
-        //       destructor, then report errors together
-
         //NOTE: we first kill the process to ensure the cgroup destructor is
-        //     able to remove the cgroup if it wants to
-        syscalls::pidfd_send_signal(
+        //      able to remove the cgroup if it wants to
+        let mut signal = syscalls::pidfd_send_signal(
             self.pidfd.as_fd(),
             linux::SIGKILL as i32,
             0,
         )
-        .wrap_error::<CommandError>()?;
+        .err();
+
+        //NOTE: `ESRCH` is not an error we care about because we are only
+        //      ensuring it has exited
+        let _ignored = signal.take_if(|e| e.error() == Errno::SRCH);
 
         //NOTE: we order this here to use the poll to ensure the process has
         //      actually exited. i'm not sure if this is necessary but it seems
         //      more robust
-        let status = self.wait()?;
+        let wait = self.wait_internal();
 
-        if let Some(cgroups_destructor) = self.cgroups_destructor.take() {
-            cgroups_destructor()?;
+        let cgroup =
+            if let Some(cgroups_destructor) = self.cgroups_destructor.take() {
+                cgroups_destructor().err()
+            } else {
+                None
+            };
+
+        match wait {
+            Ok(status) if signal.is_none() && cgroup.is_none() => Ok(status),
+            wait => Err(GuestTerminationError {
+                signal,
+                wait: wait.err(),
+                cgroup,
+            }
+            .into()),
         }
-
-        Ok(status)
     }
 
     /// Tear down the environment of the guest process and capture its exit
@@ -348,6 +370,7 @@ impl<'a> GuestInner<'a> {
     ///
     /// This method allows the caller to observe any errors that may occur when
     /// tearing the guest process down.
+    #[inline(always)]
     pub(crate) fn terminate(mut self) -> Result<ExitStatus, Error> {
         self.terminate_internal()
     }

@@ -276,14 +276,14 @@ fn check_for_ack(socket: impl AsFd, sequence: u32) -> Result<(), NetlinkError> {
                 };
 
                 return match error.error {
-                    1.. => Err(NetlinkError::InvalidError(error.error).into()),
                     0 => Ok(()),
                     //SAFETY: we checked that it was less than zero prior to
                     //        casting
-                    ..0 => Err(NetlinkError::Errno(unsafe {
+                    -4095..=-1 => Err(NetlinkError::Errno(unsafe {
                         Errno::from_u16_unchecked(error.error as u16)
                     })
                     .into()),
+                    _ => Err(NetlinkError::InvalidError(error.error).into()),
                 };
             }
 

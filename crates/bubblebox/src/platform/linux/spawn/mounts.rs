@@ -464,7 +464,9 @@ where
         let mount_attr = linux::mount_attr {
             attr_set: attributes.into_mount_attr().into(),
             attr_clr: 0,
-            propagation: 0,
+            //NOTE: ensure that mount events do not propagate in or out of this
+            //      bind mount
+            propagation: linux::MS_PRIVATE as _,
             userns_fd: 0,
         };
 

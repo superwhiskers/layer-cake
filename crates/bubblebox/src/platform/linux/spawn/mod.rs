@@ -4,11 +4,6 @@
 
 //TODO: in guest code, use `Vec::push_within_capacity` to ensure we don't
 //      exceed the capacity and allocate
-//TODO: install seccomp policy prior to exec or supervisor
-//FIXME: consider making `CLONE_PIDFD_AUTOKILL` optional, even if it simplifies
-//       logic because the host may not want the process to die automatically on
-//       thread death. will need the reintroduction of manual killing on error,
-//       though
 
 use core::{
     ffi::{self, CStr},
@@ -25,6 +20,7 @@ use meowix::{
     syscalls::{self, CloneResult},
     util::{AtFd, Cwd, FdReadWriteExt, PATH_COMPONENT_MAX, PATH_MAX, WithCStr},
 };
+use scopeguard::ScopeGuard;
 
 use super::{
     cgroups,
@@ -111,6 +107,9 @@ pub(super) enum SpawnAction<'str, Dirfd, Argv, Envp> {
 /// - Return a [`SpawnAction`] indicating what to do next with the created
 ///   sandbox.
 ///
+/// This function will call the `teardown` method of the cgroups backend with
+/// the provided state on error.
+///
 /// # Safety
 ///
 /// This method invokes `clone3(2)` directly, without sharing the parent
@@ -146,7 +145,7 @@ pub unsafe fn clone_into<
         SpawnAction<'str, Dirfd, Argv, Envp>,
         PostSpawnGuestError,
     >,
-    mut cgroups_state: CgroupsBackend::State,
+    cgroups_state: CgroupsBackend::State,
 ) -> Result<(Pid, OwnedFd, CgroupsBackend::State), Error>
 where
     CgroupsBackend: cgroups::Backend,
@@ -154,6 +153,12 @@ where
     Argv: AsRef<[*const ffi::c_char]>,
     Envp: AsRef<[*const ffi::c_char]>,
 {
+    let mut cgroups_state = scopeguard::guard(cgroups_state, |cgroups_state| {
+        //NOTE: as is said in the cgroups destructor guard, we should consider
+        //      logging errors here in the future
+        let _unused = policy.cgroups.teardown(cgroups_state);
+    });
+
     //NOTE: necessary invariant for unprivileged userns
     let host_uid = syscalls::geteuid().wrap_error::<PreSpawnError>()?;
     let host_gid = syscalls::getegid().wrap_error::<PreSpawnError>()?;
@@ -209,7 +214,7 @@ where
         cgroup: 0,
     };
 
-    if let Some(cgroup_fd) = policy.cgroups.clone_args_cgroup(&cgroups_state) {
+    if let Some(cgroup_fd) = policy.cgroups.clone_args_cgroup(&*cgroups_state) {
         //NOTE: we can't unshare the cgroup namespace here because the
         //      backend may have a post-clone hook that needs to do
         //      something related to it, so we wait until all of the
@@ -236,23 +241,13 @@ where
         //        read from it and rely upon its closure in the guest
         unsafe { syscalls::close(guest_pipe) };
 
-        return match host_post_clone(
-            &policy,
-            &mut cgroups_state,
+        host_post_clone(&policy, &mut *cgroups_state, guest_pid, host_pipe)?;
+        return Ok((
             guest_pid,
-            host_pipe,
-        ) {
-            Ok(()) => Ok((guest_pid, guest_pidfd, cgroups_state)),
-            Err(err) => {
-                //TODO: consider preserving this error
-                let _teardown_result = policy.cgroups.teardown(cgroups_state);
-
-                Err(err.into())
-            }
-        };
+            guest_pidfd,
+            ScopeGuard::into_inner(cgroups_state),
+        ));
     }
-
-    //TODO: consider using a `match` here to branch on parent vs child.
 
     //NOTE: this is where the guest process begins
 
@@ -270,6 +265,9 @@ where
 
     //SAFETY: we're in the guest, we own this fd now
     let mut guest_pipe = unsafe { OwnedFd::from_raw_fd(guest_pipe) };
+
+    //NOTE: disarm the guard since it shouldn't execute post-clone
+    let cgroups_state = ScopeGuard::into_inner(cgroups_state);
 
     match guest_post_clone(
         &policy,

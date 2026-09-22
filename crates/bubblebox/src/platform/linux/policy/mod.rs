@@ -263,7 +263,7 @@ where
                 pid,
                 //FIXME: move this to be part of the cgroups api
                 cgroups_destructor: Some(Box::new(|| {
-                    Ok(self.cgroups.teardown(final_cgroups_state)?)
+                    self.cgroups.teardown(final_cgroups_state)
                 })),
             },
         })

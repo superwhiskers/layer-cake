@@ -26,8 +26,11 @@ pub enum Error {
     /// Post-spawn error from the guest.
     PostSpawnGuest(PostSpawnGuest),
 
-    /// Command or child interface error.
+    /// Command or guest interface error.
     Command(Command),
+
+    /// Guest termination error.
+    GuestTermination(GuestTermination),
 }
 
 impl fmt::Display for Error {
@@ -38,6 +41,7 @@ impl fmt::Display for Error {
             Self::PostSpawnHost(e) => write!(f, "post-spawn (host): {e}"),
             Self::PostSpawnGuest(e) => write!(f, "post-spawn (guest): {e}"),
             Self::Command(e) => write!(f, "command: {e}"),
+            Self::GuestTermination(e) => write!(f, "guest termination: {e}"),
         }
     }
 }
@@ -74,6 +78,12 @@ impl From<Command> for Error {
     }
 }
 
+impl From<GuestTermination> for Error {
+    fn from(error: GuestTermination) -> Self {
+        Self::GuestTermination(error)
+    }
+}
+
 /// Trait to simplify tagging errors with a phase.
 pub(crate) trait Tag {
     /// Tag this error with an error and return the wrapper [`Error`].
@@ -106,7 +116,41 @@ pub(crate) trait ResultSyscallExt<T>:
 
 impl<T> ResultSyscallExt<T> for Result<T, SyscallError> {}
 
-/// Enumeration over errors that occur in the command or child interface.
+/// Guest termination error wrapper.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct GuestTermination {
+    /// Whether sending a signal to the guest errored.
+    pub signal: Option<SyscallError>,
+
+    /// Whether waiting on the guest errored.
+    pub wait: Option<Command>,
+
+    /// Whether tearing down the cgroup errored.
+    pub cgroup: Option<PostSpawnHost>,
+}
+
+impl fmt::Display for GuestTermination {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(ref e) = self.signal {
+            write!(f, "signaling failed: {e}.")?;
+        }
+
+        if let Some(ref e) = self.wait {
+            write!(f, "waiting failed: {e}.")?;
+        }
+
+        if let Some(ref e) = self.cgroup {
+            write!(f, "cgroup destruction failed: {e}.")?;
+        }
+
+        Ok(())
+    }
+}
+
+impl error::Error for GuestTermination {}
+
+/// Enumeration over errors that occur in the command or guest interface.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum Command {
