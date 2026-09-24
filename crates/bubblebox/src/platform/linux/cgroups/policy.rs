@@ -8,7 +8,7 @@ use meowix::{
     util::FdReadWriteExt, write_checked,
 };
 
-use super::super::spawn::errors::Host as HostError;
+use super::super::spawn::errors::{CgroupController, Host as HostError};
 
 //TODO: review all documentation comments here for consistency
 //TODO: make methods that take a `Resource` take an `impl Into<Resource<T>>`
@@ -198,7 +198,9 @@ impl Policy {
 
         if let Some(cpu_policy) = &self.cpu {
             if !controllers.cpu {
-                return Err(HostError::MissingCgroupController("cpu"));
+                return Err(HostError::MissingCgroupController(
+                    CgroupController::Cpu,
+                ));
             }
 
             cpu_policy.apply_to_cgroup(&cgroup_fd)?;
@@ -206,7 +208,9 @@ impl Policy {
 
         if let Some(memory_policy) = &self.memory {
             if !controllers.memory {
-                return Err(HostError::MissingCgroupController("memory"));
+                return Err(HostError::MissingCgroupController(
+                    CgroupController::Memory,
+                ));
             }
 
             memory_policy.apply_to_cgroup(&cgroup_fd)?;
@@ -214,7 +218,9 @@ impl Policy {
 
         if let Some(io_policy) = &self.io {
             if !controllers.io {
-                return Err(HostError::MissingCgroupController("io"));
+                return Err(HostError::MissingCgroupController(
+                    CgroupController::Io,
+                ));
             }
 
             io_policy.apply_to_cgroup(&cgroup_fd)?;
@@ -222,7 +228,9 @@ impl Policy {
 
         if let Some(pids_policy) = &self.pids {
             if !controllers.pids {
-                return Err(HostError::MissingCgroupController("pids"));
+                return Err(HostError::MissingCgroupController(
+                    CgroupController::Pids,
+                ));
             }
 
             pids_policy.apply_to_cgroup(&cgroup_fd)?;

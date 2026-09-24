@@ -9,6 +9,7 @@ use core::{
 use linux_raw_sys::general as linux;
 
 use crate::{
+    errno::Errno,
     fd::{AsFd, AsRawFd, BorrowedFd},
     ids::Pid,
     util::{AtFd, AtFdInner},
@@ -138,5 +139,44 @@ impl Arg {
     #[inline(always)]
     pub fn from_pid(pid: Pid) -> Self {
         Self::from_int(pid.into_raw())
+    }
+}
+
+/// Classify the output of a syscall.
+///
+/// Used to consolidate safety documentation for the [`Errno`] conversion.
+///
+/// # Safety
+///
+/// `out` must be a Linux syscall return value.
+///
+/// # Errors
+///
+/// This function errors if the syscall errored.
+#[inline(always)]
+pub(crate) unsafe fn classify_syscall_output(
+    out: ffi::c_long,
+) -> Result<ffi::c_ulong, Errno> {
+    if out < 0 {
+        //SAFETY: the cast is guaranteed to result in a value in the range
+        //        0xf001..=0xffff due to the check above, since `out` is a linux
+        //        syscall return value
+        //
+        //        this becomes unsafe in the unlikely event linux decides to use
+        //        more of the negative range. see
+        //        https://github.com/torvalds/linux/blob/master/include/linux/err.h#L10-L18
+        //
+        //        the alternative would be to check it is in the range
+        //        -4095..=-1, but this carries with it the hazard that the
+        //        wrapper around this may assume negative values cannot exist,
+        //        i.e. if it is anticipated to be a file descriptor. this is
+        //        arguably more hazardous because this is so outside the realm
+        //        of possibility that nobody would think to defensively add a
+        //        check for negative values. at least, in this case,
+        //        `Errno::from_u16_unchecked` contains a debug check for
+        //        exceptional cases
+        Err(unsafe { Errno::from_u16_unchecked(out as u16) })
+    } else {
+        Ok(out as ffi::c_ulong)
     }
 }

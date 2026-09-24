@@ -4,9 +4,9 @@
 
 //TODO: add constructors for host files that take in file descriptors
 //TODO: impl borrow for this
-//TODO: consider giving it its own error
+//TODO: consider creating an error type specifically for paths
 //TODO: write an fd type abstraction so we can accept non-meowix fds where
-//      reasonable. would need to cover bare fd input + [`AtFd`].
+//      reasonable. would need to cover bare fd input + `AtFd`.
 
 use linux_raw_sys::general as linux;
 use meowix::{
@@ -136,7 +136,9 @@ impl HostFile {
     ///
     /// # Errors
     ///
-    /// TODO
+    /// This method errors if the path provided did not refer to a file.
+    /// Additionally, it errors if opening either the directory file descriptor
+    /// or the file descriptor used to check the identity of the file fails.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         Self::open_at_internal::<0, 0>(Cwd, path)
     }
@@ -150,7 +152,9 @@ impl HostFile {
     ///
     /// # Errors
     ///
-    /// TODO
+    /// This method errors if the path provided did not refer to a file.
+    /// Additionally, it errors if opening either the directory file descriptor
+    /// or the file descriptor used to check the identity of the file fails.
     pub fn open_at<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
@@ -168,7 +172,9 @@ impl HostFile {
     ///
     /// # Errors
     ///
-    /// TODO
+    /// This method errors if the path provided did not refer to a file.
+    /// Additionally, it errors if opening either the directory file descriptor
+    /// or the file descriptor used to check the identity of the file fails.
     pub fn open_at_nofollow<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
@@ -188,7 +194,9 @@ impl HostFile {
     ///
     /// # Errors
     ///
-    /// TODO
+    /// This method errors if the path provided did not refer to a file.
+    /// Additionally, it errors if opening either the directory file descriptor
+    /// or the file descriptor used to check the identity of the file fails.
     pub fn open_at_beneath<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
@@ -209,7 +217,9 @@ impl HostFile {
     ///
     /// # Errors
     ///
-    /// TODO
+    /// This method errors if the path provided did not refer to a file.
+    /// Additionally, it errors if opening either the directory file descriptor
+    /// or the file descriptor used to check the identity of the file fails.
     pub fn open_at_beneath_nofollow<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
@@ -221,6 +231,12 @@ impl HostFile {
     }
 
     /// Implementation code used for file opening.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the path provided did not refer to a file.
+    /// Additionally, it errors if opening either the directory file descriptor
+    /// or the file descriptor used to check the identity of the file fails.
     #[inline(always)]
     fn open_at_internal<
         'fd,
@@ -247,29 +263,32 @@ impl HostFile {
 
         //NOTE: ensure that if a single filename is provided that we can still
         //      resolve relative to the dirfd
-        let dirfd = if directory.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            directory.as_path()
-        }
-        .as_os_str()
-        .as_bytes()
-        .with_c_str::<{ PATH_MAX }, _, PolicyError>(|directory| {
-            retry_on_interrupt!({
-                syscalls::openat2(
-                    &relative_to,
-                    directory,
-                    linux::open_how {
-                        flags: (linux::O_PATH | linux::O_CLOEXEC | OPEN_FLAGS)
-                            as u64,
-                        mode: 0,
-                        resolve: (linux::RESOLVE_NO_MAGICLINKS | RESOLVE_FLAGS)
-                            as u64,
-                    },
-                )
-            })
-            .map_err(Into::into)
-        })?;
+        let dirfd =
+            if directory.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                directory.as_path()
+            }
+            .as_os_str()
+            .as_bytes()
+            .with_c_str::<{ PATH_MAX }, _, _, PolicyError>(|directory| {
+                retry_on_interrupt!({
+                    syscalls::openat2(
+                        &relative_to,
+                        directory,
+                        linux::open_how {
+                            flags: (linux::O_PATH
+                                | linux::O_CLOEXEC
+                                | OPEN_FLAGS)
+                                as u64,
+                            mode: 0,
+                            resolve: (linux::RESOLVE_NO_MAGICLINKS
+                                | RESOLVE_FLAGS)
+                                as u64,
+                        },
+                    )
+                })
+            })?;
 
         //TODO: there could be a race here but i really don't know what else to
         //      do here. the only alternative i see is opening a file descriptor
@@ -282,9 +301,9 @@ impl HostFile {
         let name = name
             .as_os_str()
             .as_bytes()
-            .with_c_str::<{ PATH_COMPONENT_MAX }, _, PolicyError>(|name| {
-                Ok(name.to_owned())
-            })?;
+            .with_c_str::<{ PATH_COMPONENT_MAX }, _, PolicyError, PolicyError>(
+                |name| Ok(name.to_owned()),
+            )?;
 
         let fd = retry_on_interrupt!({
             syscalls::openat2(
@@ -415,7 +434,7 @@ impl HostDirectory {
     ///
     /// # Errors
     ///
-    /// TODO
+    /// This method errors if opening the underlying file descriptor fails.
     #[inline]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         Self::open_at_internal::<0, 0>(Cwd, path)
@@ -426,7 +445,7 @@ impl HostDirectory {
     ///
     /// # Errors
     ///
-    /// TODO
+    /// This method errors if opening the underlying file descriptor fails.
     #[inline]
     pub fn open_at<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
@@ -441,7 +460,7 @@ impl HostDirectory {
     ///
     /// # Errors
     ///
-    /// TODO
+    /// This method errors if opening the underlying file descriptor fails.
     #[inline]
     pub fn open_at_nofollow<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
@@ -476,7 +495,7 @@ impl HostDirectory {
     ///
     /// # Errors
     ///
-    /// TODO
+    /// This method errors if opening the underlying file descriptor fails.
     #[inline]
     pub fn open_at_beneath_nofollow<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
@@ -489,6 +508,10 @@ impl HostDirectory {
     }
 
     /// Implementation code used for directory opening.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if opening the underlying file descriptor fails.
     #[inline(always)]
     fn open_at_internal<
         'fd,
@@ -503,7 +526,7 @@ impl HostDirectory {
             .as_ref()
             .as_os_str()
             .as_bytes()
-            .with_c_str::<{ PATH_MAX }, _, PolicyError>(|path| {
+            .with_c_str::<{ PATH_MAX }, _, _, PolicyError>(|path| {
                 retry_on_interrupt!({
                     syscalls::openat2(
                         &relative_to,
@@ -521,10 +544,11 @@ impl HostDirectory {
                         },
                     )
                 })
-                .map_err(Into::into)
             })?;
 
-        Self::new(fd)
+        //SAFETY: `O_DIRECTORY` on `OPEN_FLAGS` ensures the returned file
+        //        descriptor refers to a directory
+        Ok(unsafe { Self::new_unchecked(fd) })
     }
 
     /// Borrows the file descriptor.
@@ -619,7 +643,7 @@ impl GuestInner {
                 .ok_or(GuestPathError::NoParentDirectory)?
                 .as_os_str()
                 .as_bytes()
-                .with_c_str::<{ PATH_MAX }, _, WithCStrError>(|path| {
+                .with_c_str::<{ PATH_MAX }, _, WithCStrError, WithCStrError>(|path| {
                     Ok(path.to_owned())
                 })
                 .map_err(|_| GuestPathError::Invalid)?,
@@ -627,7 +651,7 @@ impl GuestInner {
                 .file_name()
                 .ok_or(GuestPathError::NoFileName)?
                 .as_bytes()
-                .with_c_str::<{ PATH_COMPONENT_MAX }, _, WithCStrError>(
+                .with_c_str::<{ PATH_COMPONENT_MAX }, _, WithCStrError, WithCStrError>(
                     |path| Ok(path.to_owned()),
                 )
                 .map_err(|_| GuestPathError::Invalid)?,
@@ -637,6 +661,11 @@ impl GuestInner {
     /// Work with this path as a single [`CStr`].
     ///
     /// Useful for unavoidable path-oriented syscalls like `symlinkat(2)`.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if either the buffer was too small or if constructing
+    /// a [`CStr`] failed.
     pub(crate) fn with_c_str<const N: usize, T, E>(
         &self,
         f: impl FnOnce(&CStr) -> Result<T, E>,
@@ -670,6 +699,8 @@ impl GuestInner {
         }
         .copy_from_slice(self.file_name.to_bytes());
 
+        //TODO: we can probably use `from_bytes_with_nul_unchecked` as the
+        //      source strings are `CStr` themselves
         //SAFETY: we established the length is within our bounds
         let c_str = CStr::from_bytes_with_nul(unsafe {
             buffer.get_unchecked(..parent_dir_len + file_name_len + 2)

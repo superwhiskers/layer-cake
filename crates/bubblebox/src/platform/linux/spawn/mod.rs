@@ -2,9 +2,6 @@
 
 //! Sandbox spawning implementation.
 
-//TODO: in guest code, use `Vec::push_within_capacity` to ensure we don't
-//      exceed the capacity and allocate
-
 use core::{
     ffi::{self, CStr},
     mem::ManuallyDrop,
@@ -501,12 +498,12 @@ where
     //      container runtimes which overmount certain /proc files without
     //      assuming a proc location? there may be a better solution but this
     //       works for now
-    //FIXME: find a workaround?
+    //FIXME: implement a workaround by allowing the caller to provide a file
+    //       descriptor to the full procfs as opposed to creating one ourselves
     if !policy.namespaces.user.disable_userns {
         syscalls::fsconfig_set_string(&guest_proc_fs_fd, c"subset", c"pid")?;
     }
 
-    //TODO: set nosuid,nodev,noexec too just in case
     syscalls::fsconfig_set_string(
         &guest_proc_fs_fd,
         c"hidepid",
@@ -600,21 +597,17 @@ where
 
     //TODO: we could probably take the following and the code above
     //      and factor it out into another function
-    //TODO: we should consider using `O_EXCL` for synthetic destination
-    //      creation instead of the statx -> openat2 dance. this wasn't used
-    //      initially, but as long as we can guarantee that no nfs version older
-    //      than 3 is the target of a mountpoint, we don't need to worry about
-    //      its lack of support for it
+
+    //FIXME: we should just ignore all of that nonsense on synthetic mounts and
+    //       just create the destination and we should safely assume a race
+    //       isn't possible in any meaningful way
     //
-    //      see https://www.man7.org/linux/man-pages/man2/open.2.html#:~:text=O%5FEXCL,-Ensure
-    //FIXME: above is wrong actually. we should just ignore all of that
-    //       nonsense on synthetic mounts and just create the destination and we
-    //       should safely assume a race isn't possible in any meaningful way
-    //       (unless someone stole the fd i guess and tampered with it). under a
-    //       non-synthetic mount, we should open a fd to the destination and do
-    //       nothing else. this would reduce the amount of redundant checks we
-    //       perform
-    //TODO: we make a lot of statx calls here. try to remove some of these
+    //       under a non-synthetic mount, we should open a fd to the destination
+    //       destination and do nothing else. this would reduce the amount of
+    //       redundant checks we perform.
+    //
+    //       an alternative would be to use `O_EXCL`, but this breaks under
+    //       nfs<ver3, so it would not work universally
 
     for resolved in resolved_mappings.iter() {
         match resolved {
@@ -628,7 +621,7 @@ where
 
                 file_name.with_c_str::<{
                         PATH_COMPONENT_MAX
-                    }, _, PostSpawnGuestError>(
+                    }, _, PostSpawnGuestError, PostSpawnGuestError>(
                         |file_name| {
                             match syscalls::statx(
                                 &parent_fd,
@@ -664,8 +657,7 @@ where
                                 &parent_fd,
                                 file_name,
                                 linux::MOVE_MOUNT_F_EMPTY_PATH,
-                            )
-                            ?;
+                            )?;
 
                             Ok(())
                         }
@@ -679,7 +671,7 @@ where
 
                 file_name.with_c_str::<{
                         PATH_COMPONENT_MAX
-                    }, _, PostSpawnGuestError>(
+                    }, _, PostSpawnGuestError, PostSpawnGuestError>(
                         |file_name| {
                             match syscalls::statx(
                                 &parent_fd,
@@ -748,7 +740,7 @@ where
 
                 file_name.with_c_str::<{
                         PATH_COMPONENT_MAX
-                    }, _, PostSpawnGuestError>(
+                    }, _, PostSpawnGuestError, PostSpawnGuestError>(
                         |file_name| {
                             match syscalls::statx(
                                 &parent_fd,
@@ -797,7 +789,7 @@ where
 
                 file_name.with_c_str::<{
                     PATH_COMPONENT_MAX
-                }, _, PostSpawnGuestError>(
+                }, _, PostSpawnGuestError, PostSpawnGuestError>(
                     |file_name| {
                         match syscalls::statx(
                             &parent_fd,
@@ -839,7 +831,7 @@ where
 
                 file_name.with_c_str::<{
                         PATH_COMPONENT_MAX
-                    }, _, PostSpawnGuestError>(
+                    }, _, PostSpawnGuestError, PostSpawnGuestError>(
                         |file_name| {
                             //FIXME: we definitely could remove this and leave it
                             //       alone
@@ -859,8 +851,7 @@ where
                                 &parent_fd,
                                 file_name,
                                 permissions.bits()
-                            )
-                            ?;
+                            )?;
 
                             Ok(())
                         }
