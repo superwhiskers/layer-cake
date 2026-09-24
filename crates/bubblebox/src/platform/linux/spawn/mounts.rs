@@ -9,6 +9,7 @@ use core::{
 use linux_raw_sys::general as linux;
 use meowix::{
     fd::{AsFd, BorrowedFd, OwnedFd},
+    ids::RawGid,
     mode::Mode,
     retry_on_interrupt, syscalls,
     util::{Cwd, PATH_COMPONENT_MAX, WithCStr},
@@ -175,14 +176,11 @@ where
                 )?;
 
                 if let Some(gid) = gid {
-                    //TODO: we should probably pin this to a proper type
                     buffer.format(gid.into_raw()).with_c_str::<{
-                        fmt::unsigned_decimal_digits_upper_bound::<u32>() + 1
-                    }, _, PostSpawnGuestError>(
+                        fmt::unsigned_decimal_digits_upper_bound::<RawGid>() + 1
+                    }, _, _, PostSpawnGuestError>(
                         |gid| {
-                            syscalls::fsconfig_set_string(&fs_fd, c"gid", gid)?;
-
-                            Ok(())
+                            syscalls::fsconfig_set_string(&fs_fd, c"gid", gid)
                         },
                     )?;
                 }
@@ -244,7 +242,6 @@ where
                 ..
             } => {
                 let fs_fd = syscalls::fsopen(c"tmpfs", linux::FSOPEN_CLOEXEC)?;
-                //let mut buffer = itoa::Buffer::new();
 
                 if let Some(size) = size {
                     size.as_str().with_c_str::<{
@@ -254,30 +251,25 @@ where
                         //      character for the suffix, and another for the
                         //      null byte.
                         fmt::unsigned_decimal_digits_upper_bound::<u32>() + 2
-                    }, _, PostSpawnGuestError>(
+                    }, _, _, PostSpawnGuestError>(
                         |size| {
-                            syscalls::fsconfig_set_string(
-                                &fs_fd, c"size", size,
-                            )?;
-
-                            Ok(())
+                            syscalls::fsconfig_set_string(&fs_fd, c"size", size)
                         },
                     )?;
                 }
 
                 //TODO: uncomment when newuidmap/newgidmap or
                 //      systemd-nsresourced is supported w/ a check prior
-                /*if let Owner::Ids { user, group } = owner {
+                /*let mut buffer = itoa::Buffer::new();
+                if let Owner::Ids { user, group } = owner {
                     syscalls::fsconfig_set_string(
                         &fs_fd,
                         c"gid",
-                        //TODO: needs fixing
                         buffer.format(group.as_raw()),
                     )?;
                     syscalls::fsconfig_set_string(
                         &fs_fd,
                         c"uid",
-                        //TODO: needs fixing
                         buffer.format(user.as_raw()),
                     )?;
                 }*/
@@ -420,14 +412,21 @@ where
         };
 
         let namespace_fd = syscalls::open_tree(dirfd, c"", flags)?;
-        namespace_fd_scratch_space.push((
-            i,
-            namespace_fd,
-            destination,
-            file_info,
-            attributes,
-            is_recursive,
-        ));
+
+        //SAFETY: we check at the beginning of the function that the capacity
+        //        is greater than or equal to the number of mappings
+        let _ = unsafe {
+            namespace_fd_scratch_space
+                .push_within_capacity((
+                    i,
+                    namespace_fd,
+                    destination,
+                    file_info,
+                    attributes,
+                    is_recursive,
+                ))
+                .unwrap_unchecked()
+        };
     }
 
     //NOTE: so, there's some real subtle ordering here. we need to capture
@@ -471,7 +470,7 @@ where
         };
 
         let fd = if let Some((name, _)) = &file_info {
-            name.with_c_str::<{ PATH_COMPONENT_MAX }, _, PostSpawnGuestError>(
+            name.with_c_str::<{ PATH_COMPONENT_MAX }, _, _, PostSpawnGuestError>(
                 |name| {
                     syscalls::open_tree_attr(
                         Cwd,
@@ -479,7 +478,6 @@ where
                         open_tree_flags,
                         mount_attr,
                     )
-                    .map_err(Into::into)
                 },
             )?
         } else {

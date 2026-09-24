@@ -4,7 +4,7 @@ members = [
 ]
 exclude = [
   # ignoring for now
-  "crates/gtk4"
+  "crates/gtk4",
 ]
 resolver = "3"
 

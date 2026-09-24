@@ -172,8 +172,7 @@ pub enum Host {
     IncompleteWrite,
 
     /// Requested cgroup controller was missing.
-    //TODO: this should be an enum
-    MissingCgroupController(&'static str),
+    MissingCgroupController(CgroupController),
 }
 
 impl fmt::Display for Host {
@@ -209,6 +208,34 @@ impl From<StringRead> for Host {
 impl From<IncompleteWrite> for Host {
     fn from(_: IncompleteWrite) -> Self {
         Self::IncompleteWrite
+    }
+}
+
+/// `cgroups(2)` controller.
+#[non_exhaustive]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum CgroupController {
+    /// `cpu` controller.
+    Cpu,
+
+    /// `memory` controller.
+    Memory,
+
+    /// `io` controller.
+    Io,
+
+    /// `pids` controller.
+    Pids,
+}
+
+impl fmt::Display for CgroupController {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Cpu => "cpu",
+            Self::Memory => "memory",
+            Self::Io => "io",
+            Self::Pids => "pids",
+        })
     }
 }
 

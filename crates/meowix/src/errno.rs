@@ -11,7 +11,7 @@ use core::{
     mem, pattern_type,
 };
 
-/// Error value.
+/// Error value reported by the Linux kernel.
 ///
 /// Akin to rustix, we store it negated to avoid the conversion cost from
 /// syscalls.
@@ -60,13 +60,13 @@ impl Hash for Errno {
 impl error::Error for Errno {}
 
 impl Errno {
-    /// Extract the raw OS error number.
+    /// Extract the raw Linux error number.
     #[inline]
     pub const fn raw_os_error(self) -> i32 {
         (self.into_u16() as i16 as i32).wrapping_neg()
     }
 
-    /// Construct an [`Errno`] from the given os error number.
+    /// Construct an [`Errno`] from the given Linux error number.
     #[inline]
     pub const fn from_raw_os_error(raw: i32) -> Option<Self> {
         Self::from_errno(raw as u32)
@@ -93,9 +93,11 @@ impl Errno {
         unsafe { mem::transmute(raw) }
     }
 
-    /// Construct an [`Errno`] from a C errno.
+    /// Construct an [`Errno`] from a Linux errno.
     #[inline]
     const fn from_errno(raw: u32) -> Option<Self> {
+        debug_assert!((1..=4095).contains(&raw), "`raw` must be in 1..=4095");
+
         let encoded = raw.wrapping_neg() as u16;
 
         if let 0xf001..=0xffff = encoded {

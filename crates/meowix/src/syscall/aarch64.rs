@@ -22,6 +22,7 @@ macro_rules! fixed_syscall {
         ) -> Result<ffi::c_ulong, Errno> {
             let out: ffi::c_long;
 
+            //SAFETY: caller knows what they're doing
             unsafe {
                 core::arch::asm!(
                     "svc 0",
@@ -31,13 +32,8 @@ macro_rules! fixed_syscall {
                 );
             }
 
-            if out < 0 {
-                //SAFETY: the cast is guaranteed to result in a value in the range
-                //        0xf001..=0xffff due to the check above
-                Err(unsafe { Errno::from_u16_unchecked(out as u16) })
-            } else {
-                Ok(out as ffi::c_ulong)
-            }
+            //SAFETY: `out` is the direct result of making a syscall on linux
+            unsafe { $crate::syscall::classify_syscall_output(out) }
         }
     };
     ($name:ident(number, $arg1:ident $(, $arg:ident: $reg:tt)*)) => {
@@ -55,6 +51,7 @@ macro_rules! fixed_syscall {
         ) -> Result<ffi::c_ulong, Errno> {
             let out: ffi::c_long;
 
+            //SAFETY: caller knows what they're doing
             unsafe {
                 core::arch::asm!(
                     "svc 0",
@@ -65,13 +62,8 @@ macro_rules! fixed_syscall {
                 );
             }
 
-            if out < 0 {
-                //SAFETY: the cast is guaranteed to result in a value in the range
-                //        0xf001..=0xffff due to the check above
-                Err(unsafe { Errno::from_u16_unchecked(out as u16) })
-            } else {
-                Ok(out as ffi::c_ulong)
-            }
+            //SAFETY: `out` is the direct result of making a syscall on linux
+            unsafe { $crate::syscall::classify_syscall_output(out) }
         }
     };
 }
