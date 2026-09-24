@@ -4,7 +4,11 @@ members = [
 ]
 exclude = [
   # ignoring for now
-  "crates/gtk4"
+  "crates/gtk4",
+  # libFuzzer harnesses are built by cargo-fuzz with their own profile.
+  "fuzz",
+  # Standalone public-API security review consumer.
+  "tools/security-review/library-harness",
 ]
 resolver = "3"
 

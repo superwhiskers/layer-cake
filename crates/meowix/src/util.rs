@@ -320,34 +320,35 @@ pub trait WithCStr {
     /// This method errors if the null byte check is not passed, if the buffer's
     /// length was not enough to contain the new [`CStr`], or if the provided
     /// closure errors.
-    fn with_c_str<const N: usize, T, E>(
+    fn with_c_str<const N: usize, T, I, E>(
         &self,
-        //TODO: allow the error of the [`Result`] to be any type which can be
-        //      converted into `E` instead of requiring it to be `E` itself
-        f: impl FnOnce(&CStr) -> Result<T, E>,
+        f: impl FnOnce(&CStr) -> Result<T, I>,
     ) -> Result<T, E>
     where
+        I: Into<E>,
         E: From<ffi::FromBytesWithNulError> + From<CStrBufferTooSmall>;
 }
 
 impl WithCStr for &CStr {
-    fn with_c_str<const N: usize, T, E>(
+    fn with_c_str<const N: usize, T, I, E>(
         &self,
-        f: impl FnOnce(&CStr) -> Result<T, E>,
+        f: impl FnOnce(&CStr) -> Result<T, I>,
     ) -> Result<T, E>
     where
+        I: Into<E>,
         E: From<ffi::FromBytesWithNulError> + From<CStrBufferTooSmall>,
     {
-        f(self)
+        f(self).map_err(Into::into)
     }
 }
 
 impl WithCStr for &[u8] {
-    fn with_c_str<const N: usize, T, E>(
+    fn with_c_str<const N: usize, T, I, E>(
         &self,
-        f: impl FnOnce(&CStr) -> Result<T, E>,
+        f: impl FnOnce(&CStr) -> Result<T, I>,
     ) -> Result<T, E>
     where
+        I: Into<E>,
         E: From<ffi::FromBytesWithNulError> + From<CStrBufferTooSmall>,
     {
         //TODO: we could use [`MaybeUninit`] here...
@@ -363,19 +364,20 @@ impl WithCStr for &[u8] {
             buffer.get_unchecked(..self.len() + 1)
         })?;
 
-        f(c_str)
+        f(c_str).map_err(Into::into)
     }
 }
 
 impl WithCStr for &str {
-    fn with_c_str<const N: usize, T, E>(
+    fn with_c_str<const N: usize, T, I, E>(
         &self,
-        f: impl FnOnce(&CStr) -> Result<T, E>,
+        f: impl FnOnce(&CStr) -> Result<T, I>,
     ) -> Result<T, E>
     where
+        I: Into<E>,
         E: From<ffi::FromBytesWithNulError> + From<CStrBufferTooSmall>,
     {
-        self.as_bytes().with_c_str::<N, T, E>(f)
+        self.as_bytes().with_c_str::<N, T, I, E>(f)
     }
 }
 

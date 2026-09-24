@@ -49,10 +49,14 @@
           default = pkgs.mkShell {
             packages = [
               rustToolchain
+              pkgs.cargo-fuzz
               pkgs.cargo-deny
               pkgs.pkg-config
               pkgs.clang
               pkgs.lld
+              pkgs.hyperfine
+              pkgs.strace
+              pkgs.time
             ];
 
             CARGO_BUILD_TARGET = target;

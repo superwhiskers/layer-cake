@@ -8,6 +8,7 @@
 #![feature(const_range)]
 #![feature(try_blocks)]
 #![feature(likely_unlikely)]
+#![feature(vec_push_within_capacity)]
 
 //! Painless cross-platform sandboxing.
 

@@ -200,7 +200,7 @@ unsafe impl Backend for SystemdCgroups {
             unit.get("org.freedesktop.systemd1.Scope", "ControlGroup")?;
         let root_fd = cgroup_path_string
             .trim_prefix("/")
-            .with_c_str::<{ PATH_MAX }, _, PostSpawnHostError>(
+            .with_c_str::<{ PATH_MAX }, _, _, PostSpawnHostError>(
                 |cgroup_path| {
                     retry_on_interrupt!({
                         syscalls::openat2(
@@ -219,7 +219,6 @@ unsafe impl Backend for SystemdCgroups {
                             },
                         )
                     })
-                    .map_err(Into::into)
                 },
             )?;
 
