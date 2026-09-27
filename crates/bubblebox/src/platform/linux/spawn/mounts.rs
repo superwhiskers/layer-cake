@@ -381,7 +381,7 @@ where
     //      should work with btreemap
 
     for (i, (destination, source)) in mappings {
-        let mut flags = syscalls::OPEN_TREE_NAMESPACE
+        let mut flags = linux::OPEN_TREE_NAMESPACE
             | linux::OPEN_TREE_CLOEXEC
             | linux::AT_EMPTY_PATH;
         let mut file_info = None;
@@ -438,7 +438,7 @@ where
         syscalls::unshare(linux::CLONE_NEWNS as ffi::c_int)?;
     }
 
-    let original_ns_flags = syscalls::OPEN_TREE_NAMESPACE
+    let original_ns_flags = linux::OPEN_TREE_NAMESPACE
         | linux::OPEN_TREE_CLOEXEC
         | linux::AT_EMPTY_PATH
         | linux::AT_RECURSIVE;

@@ -3,6 +3,7 @@
 //! File descriptor policy implementation.
 
 use core::{ffi, mem::ManuallyDrop};
+use linux_raw_sys::general as linux;
 use meowix::{
     fd::{AsRawFd, OwnedFd, RawFd},
     retry_on_interrupt, syscalls,
@@ -64,7 +65,7 @@ pub unsafe fn apply_file_descriptor_policy<'a>(
                 syscalls::close_range(
                     range_start,
                     fd.saturating_sub(1),
-                    syscalls::CLOSE_RANGE_CLOEXEC,
+                    linux::CLOSE_RANGE_CLOEXEC as _,
                 )?
             };
         }
@@ -77,7 +78,7 @@ pub unsafe fn apply_file_descriptor_policy<'a>(
         syscalls::close_range(
             range_start,
             !0u32,
-            syscalls::CLOSE_RANGE_CLOEXEC,
+            linux::CLOSE_RANGE_CLOEXEC as _,
         )?
     };
 

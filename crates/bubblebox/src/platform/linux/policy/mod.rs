@@ -174,7 +174,7 @@ impl<'a> Policy<'a, OwnedFdCgroups> {
 impl<'a> Policy<'a, SystemdCgroups> {
     /// Create a cgroups hierarchy using the systemd backend.
     ///
-    /// This requires the running system to have [systemd] as pid 1.
+    /// This requires the running system to have systemd as pid 1.
     pub fn systemd_cgroups(
         mut self,
         configure: impl FnOnce(Cgroups<SystemdCgroups>) -> Cgroups<SystemdCgroups>,

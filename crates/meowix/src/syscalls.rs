@@ -12,7 +12,7 @@ use core::{
 };
 use linux_raw_sys::{
     general::{self as linux, fsconfig_command as fsconfig},
-    ioctl, net as linux_net, netlink, prctl, ptrace as linux_ptrace,
+    ioctl, keyctl, net as linux_net, netlink, prctl, ptrace as linux_ptrace,
 };
 
 use crate::{
@@ -24,129 +24,6 @@ use crate::{
     ids::{Gid, Pid, Uid},
     syscall::*,
     util::AtFd,
-};
-
-//FIXME: some of the below should be placed in a separate module
-
-/// Set the close-on-exec flag on syscalls instead of closing them.
-pub const CLOSE_RANGE_CLOEXEC: ffi::c_int = 1 << 2;
-
-/// When this flag is set, `open_tree(2)` returns a file descriptor
-/// referring to a mount namespace with the copied mount tree mounted on top
-/// of the real rootfs.
-///
-/// See [LWN] for more details.
-///
-/// [LWN]: https://lwn.net/Articles/1052262/
-pub const OPEN_TREE_NAMESPACE: u32 = 1 << 1;
-
-/// When this flag is set, auto-reap the child on exit.
-///
-/// See [the Linux kernel mailing list] and [LWN] for more details.
-///
-/// [the Linux kernel mailing list]: https://lkml.org/lkml/2026/2/23/580
-/// [LWN]: https://lwn.net/Articles/1059673/
-pub const CLONE_AUTOREAP: u64 = 1u64 << 34;
-
-/// When this flag is set, spawn the child with the no new privileges prctl set.
-pub const CLONE_NNP: u64 = 1u64 << 35;
-
-/// When this flag is set, tie the child process' lifetime to the pidfd returned
-/// by [`linux::CLONE_PIDFD`].
-///
-/// See [the Linux kernel mailing list] and [LWN] for more details.
-///
-/// [the Linux kernel mailing list]: https://lkml.org/lkml/2026/2/23/583
-/// [LWN]: https://lwn.net/Articles/1059673/
-pub const CLONE_PIDFD_AUTOKILL: u64 = 1u64 << 36;
-
-/// `ioctl(2)` to retrieve information about a pidfd.
-///
-/// See [LWN] for more details.
-///
-/// [LWN]: https://lwn.net/Articles/992991/
-const PIDFD_GET_INFO_V0: usize = 0xc040_ff0b;
-
-/// Mask for [`PIDFD_GET_INFO_V0`] (and later revisions) to request the exit
-/// code of the process.
-pub const PIDFD_INFO_EXIT: u64 = 1 << 3;
-
-/// Initial revision of the structure used by `PIDFD_GET_INFO`.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Default)]
-pub struct PidfdInfoV0 {
-    /// Mask of fields set by the kernel.
-    pub mask: u64,
-
-    /// `cgroups(7)` id of the process.
-    ///
-    /// Always returned if available.
-    pub cgroupid: u64,
-
-    /// [`Pid`] of the process.
-    ///
-    /// Always returned.
-    pub pid: u32,
-
-    /// Thread group ID of the process.
-    ///
-    /// Always returned.
-    pub tgid: u32,
-
-    /// Parent process ID of the process.
-    ///
-    /// Always returned.
-    pub ppid: u32,
-
-    /// Real user ID of the process.
-    ///
-    /// Always returned.
-    pub ruid: u32,
-
-    /// Real group ID of the process.
-    ///
-    /// Always returned.
-    pub rgid: u32,
-
-    /// Effective user ID of the process.
-    ///
-    /// Always returned.
-    pub euid: u32,
-
-    /// Effective group ID of the process.
-    ///
-    /// Always returned.
-    pub egid: u32,
-
-    /// Saved user ID of the process.
-    ///
-    /// Always returned.
-    pub suid: u32,
-
-    /// Saved group ID of the process.
-    ///
-    /// Always returned.
-    pub sgid: u32,
-
-    /// Filesystem user ID of the process.
-    ///
-    /// Always returned.
-    pub fsuid: u32,
-
-    /// Filesystem group ID of the process.
-    ///
-    /// Always returned.
-    pub fsgid: u32,
-
-    /// Exit code of the process.
-    ///
-    /// Request with `PIDFD_INFO_EXIT`.
-    pub exit_code: i32,
-}
-
-const _: () = {
-    //NOTE: ensure that the struct is accurate
-    assert!(size_of::<PidfdInfoV0>() == 64);
 };
 
 /// `clone3(2)`.
@@ -1263,7 +1140,7 @@ pub fn recvmsg(
 ) -> Result<usize, SyscallError> {
     let mut iovec = linux::iovec {
         iov_base: buffer.as_mut_ptr().cast::<ffi::c_void>(),
-        iov_len: buffer.len() as u64,
+        iov_len: buffer.len() as _,
     };
     let iovec_mut: *mut linux::iovec = &mut iovec;
 
@@ -1462,11 +1339,12 @@ pub unsafe fn rt_sigprocmask(
 
 /// `ioctl(2)` on a pidfd to retrieve information about the process.
 #[inline]
-pub fn pidfd_get_info_v0(
+pub fn pidfd_get_info(
     fd: impl AsFd,
     mask: u64,
-) -> Result<PidfdInfoV0, SyscallError> {
-    let mut out = PidfdInfoV0::default();
+) -> Result<linux::pidfd_info, SyscallError> {
+    //SAFETY: this is a c structure which is valid when zero-initialized
+    let mut out = unsafe { mem::zeroed::<linux::pidfd_info>() };
     out.mask = mask;
 
     //SAFETY: `out` is valid, `fd` is a valid fd by it implementing [`AsFd`].
@@ -1474,7 +1352,7 @@ pub fn pidfd_get_info_v0(
         syscall3(
             abi::IOCTL,
             Arg::from_fd(fd.as_fd()),
-            Arg::from_ulong(PIDFD_GET_INFO_V0 as _),
+            Arg::from_ulong(ioctl::PIDFD_GET_INFO as _),
             Arg::from_mut_ptr(&mut out),
         )
         .wrap_syscall(Syscall::Ioctl)?
@@ -1575,3 +1453,23 @@ pub fn seccomp_set_mode_filter(
 
     Ok(())
 }
+
+/// `keyctl(2)` with `KEYCTL_JOIN_SESSION_KEYRING`.
+#[inline]
+pub fn keyctl_join_session_keyring(
+    desc: Option<&'_ CStr>,
+) -> Result<i32, SyscallError> {
+    //SAFETY: invariants upon `CStr` ensure this call is valid
+    let joined_session_keyring = unsafe {
+        syscall2(
+            abi::KEYCTL,
+            Arg::from_int(keyctl::KEYCTL_JOIN_SESSION_KEYRING as _),
+            Arg::from_optional_c_str(desc),
+        )
+        .wrap_syscall(Syscall::Keyctl)?
+    } as _;
+
+    Ok(joined_session_keyring)
+}
+
+//TODO: finish keyring implementation
