@@ -63,6 +63,7 @@ default-features = false
 
 [workspace.dependencies.bubblebox]
 path = "crates/bubblebox"
+features = ["systemd-cgroups"]
 
 [workspace.dependencies.meowix]
 path = "crates/meowix"

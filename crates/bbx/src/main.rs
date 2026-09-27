@@ -22,7 +22,7 @@ use bubblebox::{
     command::Command,
     paths::Guest,
     platform::{
-        cgroups::NullCgroups,
+        cgroups::SystemdCgroups,
         command::CommandExt,
         meowix::{
             capabilities::CapabilitySet,
@@ -155,7 +155,7 @@ command unchanged."
 fn interpret_policy<'a>(
     mut parser: lexopt::Parser,
     mut archive: Option<ZipArchive<File>>,
-) -> anyhow::Result<(Policy<'a, NullCgroups>, Command)> {
+) -> anyhow::Result<(Policy<'a, SystemdCgroups>, Command)> {
     use lexopt::prelude::*;
 
     let name = parser.bin_name().unwrap_or("bbx").to_owned();

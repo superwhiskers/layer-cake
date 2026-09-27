@@ -3,6 +3,7 @@
 use dbus::{
     arg::{RefArg, Variant},
     blocking::{Connection, Proxy, stdintf::org_freedesktop_dbus::Properties},
+    message::MatchRule,
     strings::Path,
 };
 use linux_raw_sys::general as linux;
@@ -15,7 +16,7 @@ use meowix::{
     write_checked,
 };
 use scopeguard::ScopeGuard;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::{
@@ -126,11 +127,20 @@ unsafe impl Backend for SystemdCgroups {
         let auxiliary: Vec<(&str, Vec<(&str, Variant<Box<dyn RefArg>>)>)> =
             vec![];
 
-        let (_job_path,): (Path<'static>,) = systemd.method_call(
+        let mut rule = MatchRule::new_signal(
             "org.freedesktop.systemd1.Manager",
-            "StartTransientUnit",
-            (&unit_name, "fail", unit_properties, auxiliary),
-        )?;
+            "JobRemoved",
+        );
+        rule.sender = Some("org.freedesktop.systemd1".into());
+        rule.path = Some("/org/freedesktop/systemd1".into());
+
+        let match_string = rule.match_str();
+        connection.add_match_no_cb(&match_string)?;
+
+        scopeguard::defer! {
+            //NOTE: we should probably log this in the future if it fails
+            let _unused = connection.remove_match_no_cb(&match_string);
+        }
 
         //NOTE: by this point, we want to ensure that the unit is stopped on
         //      error so we set up this guard that we later remove if it
@@ -154,6 +164,48 @@ unsafe impl Backend for SystemdCgroups {
             //      future
             Err(_e) => (),
         });
+
+        let (job_path,): (Path<'static>,) = systemd.method_call(
+            "org.freedesktop.systemd1.Manager",
+            "StartTransientUnit",
+            (&*unit_name, "fail", unit_properties, auxiliary),
+        )?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(PostSpawnHostError::UnitStartTimeout)?;
+
+            let Some(message) =
+                connection.channel().blocking_pop_message(remaining)?
+            else {
+                return Err(PostSpawnHostError::UnitStartTimeout);
+            };
+
+            if !rule.matches(&message) {
+                continue;
+            }
+
+            let (_, candidate_path, _, result): (
+                u32,
+                Path<'_>,
+                String,
+                String,
+            ) = message
+                .read4()
+                .map_err(|_| PostSpawnHostError::MalformedDbusMessage)?;
+
+            if candidate_path != job_path {
+                continue;
+            }
+
+            if result != "done" {
+                return Err(PostSpawnHostError::UnitStartJobFailed);
+            }
+
+            break;
+        }
 
         let (unit_path,): (Path<'static>,) = systemd.method_call(
             "org.freedesktop.systemd1.Manager",
@@ -189,10 +241,6 @@ unsafe impl Backend for SystemdCgroups {
                 },
             )
         })?;
-
-        //NOTE: we may need to poll the unit start job in order for the
-        //      successive control group call to return a functioning cgroup
-        //      hierarchy that we control
 
         //NOTE: no idea why but the `&CStr` implementation for dbus' `Get`
         //      doesn't work here for some lifetime reason

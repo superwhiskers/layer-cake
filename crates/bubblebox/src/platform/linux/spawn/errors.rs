@@ -68,6 +68,18 @@ pub enum PostSpawnHost {
     #[cfg(feature = "systemd-cgroups")]
     FromBytesWithNulError(std::ffi::FromBytesWithNulError),
 
+    /// Starting the systemd unit to acquire a cgroup failed.
+    #[cfg(feature = "systemd-cgroups")]
+    UnitStartJobFailed,
+
+    /// Starting the systemd unit timed out.
+    #[cfg(feature = "systemd-cgroups")]
+    UnitStartTimeout,
+
+    /// D-Bus message returned from systemd was malformed.
+    #[cfg(feature = "systemd-cgroups")]
+    MalformedDbusMessage,
+
     /// Transfer that should have been fixed size was incomplete.
     PartialTransfer(PartialTransfer),
 
@@ -95,6 +107,18 @@ impl fmt::Display for PostSpawnHost {
             Self::FromBytesWithNulError(e) => {
                 write!(f, "C string conversion error: {e}")
             }
+            #[cfg(feature = "systemd-cgroups")]
+            Self::UnitStartJobFailed => f.write_str(
+                "the start job for the systemd unit used to acquire a cgroup failed",
+            ),
+            #[cfg(feature = "systemd-cgroups")]
+            Self::UnitStartTimeout => f.write_str(
+                "starting the systemd unit used to acquire a cgroup timed out",
+            ),
+            #[cfg(feature = "systemd-cgroups")]
+            Self::MalformedDbusMessage => f.write_str(
+                "systemd returned a malformed D-Bus message",
+            ),
             Self::PartialTransfer(e) => {
                 write!(
                     f,
