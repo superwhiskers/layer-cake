@@ -273,12 +273,12 @@ impl<'a> GuestInner<'a> {
         debug_assert_eq!(n_ready, 1);
         debug_assert_ne!(fds[0].revents() & linux::POLLHUP as ffi::c_short, 0);
 
-        let pidfd_info = syscalls::pidfd_get_info_v0(
+        let pidfd_info = syscalls::pidfd_get_info(
             &self.pidfd,
-            syscalls::PIDFD_INFO_EXIT,
+            linux::PIDFD_INFO_EXIT as u64,
         )?;
 
-        if hint::likely(pidfd_info.mask & syscalls::PIDFD_INFO_EXIT != 0) {
+        if hint::likely(pidfd_info.mask & linux::PIDFD_INFO_EXIT as u64 != 0) {
             Ok(ExitStatus::from_raw(pidfd_info.exit_code))
         } else {
             Err(CommandError::MissingInformation.into())
@@ -306,11 +306,13 @@ impl<'a> GuestInner<'a> {
 
         debug_assert_ne!(fds[0].revents() & linux::POLLHUP as ffi::c_short, 0);
 
-        let pidfd_info =
-            syscalls::pidfd_get_info_v0(&self.pidfd, syscalls::PIDFD_INFO_EXIT)
-                .wrap_error::<CommandError>()?;
+        let pidfd_info = syscalls::pidfd_get_info(
+            &self.pidfd,
+            linux::PIDFD_INFO_EXIT as u64,
+        )
+        .wrap_error::<CommandError>()?;
 
-        if hint::likely(pidfd_info.mask & syscalls::PIDFD_INFO_EXIT != 0) {
+        if hint::likely(pidfd_info.mask & linux::PIDFD_INFO_EXIT as u64 != 0) {
             Ok(Some(ExitStatus::from_raw(pidfd_info.exit_code)))
         } else {
             Err(CommandError::MissingInformation.into())

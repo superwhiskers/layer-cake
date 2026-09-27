@@ -80,6 +80,16 @@ impl Arg {
         Self::from_ptr(c_str.as_ptr())
     }
 
+    /// Construct a syscall argument from an optional C string.
+    #[inline(always)]
+    pub fn from_optional_c_str(c_str: Option<&'_ CStr>) -> Self {
+        Self::from_ptr(if let Some(c_str) = c_str {
+            c_str.as_ptr()
+        } else {
+            ptr::null::<ffi::c_char>()
+        })
+    }
+
     /// Construct a syscall argument from a file descriptor.
     #[inline(always)]
     pub fn from_fd(fd: BorrowedFd<'_>) -> Self {

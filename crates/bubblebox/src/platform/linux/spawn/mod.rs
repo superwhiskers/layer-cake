@@ -190,10 +190,10 @@ where
     let mut guest_pidfd: ffi::c_int = -1;
     let mut clone_args = linux::clone_args {
         flags: clone_flags as u64
-            | syscalls::CLONE_AUTOREAP
+            | linux::CLONE_AUTOREAP
             //NOTE: no new privileges is required for autokill
-            | syscalls::CLONE_NNP
-            | syscalls::CLONE_PIDFD_AUTOKILL
+            | linux::CLONE_NNP
+            | linux::CLONE_PIDFD_AUTOKILL
             //NOTE: removes the chance of an inherited signal handler running in
             //      the guest. we still need to manually reset the signal
             //      handlers later, though, as this will not remove `SIG_IGN`

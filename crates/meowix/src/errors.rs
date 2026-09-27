@@ -304,6 +304,9 @@ pub enum Syscall {
     /// `seccomp(2)`.
     Seccomp = 46,
 
+    /// `keyctl(2)`.
+    Keyctl = 47,
+
     /// Syscall variant was not recognized.
     Unknown = u8::MAX,
 }
@@ -358,6 +361,7 @@ impl fmt::Display for Syscall {
             Self::Symlinkat => "symlinkat(2)",
             Self::Fcntl => "fcntl(2)",
             Self::Seccomp => "seccomp(2)",
+            Self::Keyctl => "keyctl(2)",
             Self::Unknown => "unknown syscall",
         })
     }
@@ -413,6 +417,7 @@ impl From<u8> for Syscall {
             44 => Syscall::Symlinkat,
             45 => Syscall::Fcntl,
             46 => Syscall::Seccomp,
+            47 => Syscall::Keyctl,
             _ => Syscall::Unknown,
         }
     }

@@ -2,6 +2,9 @@
 
 //! Wrappers over IDs used by the kernel for processes, users, and groups.
 
+//TODO: consider adding the type equivalent of `key_serial_t` (32-bit signed
+//      integer)
+
 use core::{
     fmt,
     hash::{Hash, Hasher},
