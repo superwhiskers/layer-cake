@@ -1454,6 +1454,8 @@ pub fn seccomp_set_mode_filter(
     Ok(())
 }
 
+//FIXME: following three syscalls need to use a proper `key_serial_t` type
+
 /// `keyctl(2)` with `KEYCTL_JOIN_SESSION_KEYRING`.
 #[inline]
 pub fn keyctl_join_session_keyring(
@@ -1472,4 +1474,34 @@ pub fn keyctl_join_session_keyring(
     Ok(joined_session_keyring)
 }
 
-//TODO: finish keyring implementation
+/// `keyctl(2)` with `KEYCTL_ASSUME_AUTHORITY`.
+#[inline]
+pub fn keyctl_assume_authority(key: i32) -> Result<i32, SyscallError> {
+    //SAFETY: we're only passing an integer
+    let authorization_key = unsafe {
+        syscall2(
+            abi::KEYCTL,
+            Arg::from_int(keyctl::KEYCTL_ASSUME_AUTHORITY as _),
+            Arg::from_int(key.into()),
+        )
+        .wrap_syscall(Syscall::Keyctl)?
+    } as _;
+
+    Ok(authorization_key)
+}
+
+/// `keyctl(2)` with `KEYCTL_SET_REQKEY_KEYRING`.
+#[inline]
+pub fn keyctl_set_reqkey_keyring(op: ffi::c_int) -> Result<i32, SyscallError> {
+    //SAFETY: we're only passing an integer
+    let previous_requested_key_keyring = unsafe {
+        syscall2(
+            abi::KEYCTL,
+            Arg::from_int(keyctl::KEYCTL_SET_REQKEY_KEYRING as _),
+            Arg::from_int(op),
+        )
+        .wrap_syscall(Syscall::Keyctl)?
+    } as _;
+
+    Ok(previous_requested_key_keyring)
+}

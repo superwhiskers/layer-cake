@@ -29,6 +29,7 @@ use super::{
 use crate::command::{Command, Guest};
 use errors::Policy as PolicyError;
 use fd::FdPolicy;
+use keyring::Keyring;
 use mounts::MountTree;
 use namespace::Namespaces;
 
@@ -37,6 +38,7 @@ use super::cgroups::{SystemdCgroups, SystemdState};
 
 pub mod errors;
 pub mod fd;
+pub mod keyring;
 pub mod mounts;
 pub mod namespace;
 
@@ -63,6 +65,9 @@ pub struct Policy<'a, CgroupsBackend> {
     /// Whether to create a new session using `setsid(2)`.
     pub(super) new_session: bool,
 
+    /// Keyring policy.
+    pub(super) keyring: Keyring,
+
     /// Seccomp filter.
     pub(super) seccomp_filter: Option<Cow<'a, [linux_ptrace::sock_filter]>>,
 }
@@ -79,6 +84,7 @@ where
             target_capabilities: Default::default(),
             file_descriptors: Default::default(),
             new_session: true,
+            keyring: Default::default(),
             //FIXME: provide a strict default filter. this is likely quite
             //       difficult
             seccomp_filter: None,
@@ -331,6 +337,15 @@ where
     /// initialization.
     pub fn new_session(mut self, new_session: bool) -> Self {
         self.new_session = new_session;
+        self
+    }
+
+    /// Modify the keyring policy of the sandbox.
+    pub fn keyring(
+        mut self,
+        configure: impl FnOnce(Keyring) -> Keyring,
+    ) -> Self {
+        self.keyring = configure(self.keyring);
         self
     }
 
