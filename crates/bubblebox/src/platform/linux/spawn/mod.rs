@@ -6,7 +6,7 @@ use core::{
     ffi::{self, CStr},
     mem::ManuallyDrop,
 };
-use linux_raw_sys::general as linux;
+use linux_raw_sys::{general as linux, net as linux_net};
 use meowix::{
     capabilities::{self, CapabilitySet, CapabilitySets},
     errno::Errno,
@@ -901,7 +901,43 @@ where
         }
     }
 
+    //FIXME: this needs to stay up to date with the networkoptions as we will
+    //       add more options in the future
     if let Namespace::Unshared(ref _network) = policy.namespaces.network {
+        //NOTE: vsock is a little weird, so we need to do another namespace
+        //      dance
+
+        //NOTE: first we probe for the vsock family
+        match syscalls::socket(
+            linux_net::AF_VSOCK as _,
+            (linux_net::SOCK_STREAM | linux::O_CLOEXEC) as _,
+            0,
+        ) {
+            Ok(_) => {
+                //NOTE: we start by setting the vsock ns mode for subsequent
+                //      network namespaces to local
+
+                open_beneath_and_write!(
+                    &guest_proc_fd,
+                    c"sys/net/vsock/child_ns_mode",
+                    b"local"
+                );
+
+                //NOTE: we then unshare again, so that the ns mode applies to
+                //      the guest
+
+                //SAFETY: the network namespace has no safety implications in
+                //        this case
+                unsafe {
+                    syscalls::unshare(linux::CLONE_NEWNET as ffi::c_int)?
+                };
+            }
+            //NOTE: this implies the kernel doesn't support vsock, which is
+            //      fine under our threat model
+            Err(e) if e.error() == Errno::AFNOSUPPORT => (),
+            Err(e) => return Err(e.into()),
+        }
+
         netlink::setup_loopback()?;
     }
 
