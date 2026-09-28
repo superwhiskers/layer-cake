@@ -42,6 +42,7 @@ mod fd;
 mod fmt;
 mod guest;
 mod host;
+mod keyring;
 mod mounts;
 mod namespace;
 mod wire;
@@ -462,8 +463,6 @@ where
     let guest_uid = guest_uid.unwrap_or(host_uid);
     let guest_gid = guest_gid.unwrap_or(host_gid);
 
-    //NOTE: should be set by clone_nnp?
-    //syscalls::set_no_new_privs()?;
     capabilities::drop_bounding_set(policy.target_capabilities)?;
 
     //NOTE: we need to do this because `SIG_IGN` isn't reset on exec. see:
@@ -942,6 +941,11 @@ where
         permitted: policy.target_capabilities,
         inheritable: policy.target_capabilities,
     })?;
+
+    //NOTE: this is intentionally ordered late so that once subordinate uid/gid
+    //      behavior is implemented, this completely untethers the guest process
+    //      from the host's keyring authority
+    keyring::apply_keyring_policy(&policy.keyring)?;
 
     guest_callback()
 }
