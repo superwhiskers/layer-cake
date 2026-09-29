@@ -354,8 +354,9 @@ where
     /// # Notes
     ///
     /// In order for the filter to not prevent execution when spawning a process
-    /// as pid 1, it must allow the `execveat(2)` syscall. No other syscalls are
-    /// required in this execution mode.
+    /// as pid 1, it must allow the `execveat(2)`, `write(2)`, and
+    /// `exit_group(2)` syscalls. No other syscalls are required in this
+    /// execution mode.
     pub fn seccomp_filter(
         mut self,
         filter: impl Into<Cow<'a, [linux_ptrace::sock_filter]>>,

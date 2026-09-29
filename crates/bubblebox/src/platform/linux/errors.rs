@@ -3,7 +3,7 @@
 //! Specialized error type for Linux backend procedures.
 
 use meowix::errors::{CStrBufferTooSmall, SyscallError};
-use std::{error, fmt};
+use std::{error, fmt, process::ExitStatus};
 
 use super::{
     policy::errors::Policy,
@@ -124,7 +124,7 @@ pub struct GuestTermination {
     pub signal: Option<SyscallError>,
 
     /// Whether waiting on the guest errored.
-    pub wait: Option<Command>,
+    pub wait: Option<Result<ExitStatus, Command>>,
 
     /// Whether tearing down the cgroup errored.
     pub cgroup: Option<PostSpawnHost>,
@@ -136,7 +136,7 @@ impl fmt::Display for GuestTermination {
             write!(f, "signaling failed: {e}.")?;
         }
 
-        if let Some(ref e) = self.wait {
+        if let Some(Err(ref e)) = self.wait {
             write!(f, "waiting failed: {e}.")?;
         }
 

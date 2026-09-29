@@ -44,9 +44,20 @@ impl From<Result<(), PostSpawnGuest>> for PostSpawnGuestWire {
                     Netlink::BufferTooSmall => (0, 5),
                     Netlink::IntegerOverflow => (0, 6),
                     Netlink::IncompleteWrite => (0, 7),
+                    Netlink::AckTimeout => (0, 8),
                     Netlink::Errno(error) => (u8::MAX, error.raw_os_error()),
-                    Netlink::Syscall(error) => {
-                        (error.syscall() as u8, error.error().raw_os_error())
+                    Netlink::InvalidError(error) => (u8::MAX - 1, error),
+                    //NOTE: let an unknown syscall fall through to the invalid
+                    //      error
+                    Netlink::Syscall(error)
+                        if (error.syscall() as u8) < u8::MAX =>
+                    {
+                        (
+                            //NOTE: we shift this to avoid a collision with
+                            //      [`Netlink::MalformedHeader`]
+                            error.syscall() as u8 + 1,
+                            error.error().raw_os_error(),
+                        )
                     }
                     //NOTE: this should be sufficient to always result in an
                     //      invalid error

@@ -509,27 +509,27 @@ impl MountAttributes {
         self
     }
 
-    /// Whether the mount should honor setuid bits, setgid bits, or file
+    /// Whether the mount should ignore setuid bits, setgid bits, and file
     /// capabilities.
     pub fn no_setuid(mut self, no_setuid: bool) -> Self {
         self.no_setuid = no_setuid;
         self
     }
 
-    /// Whether the mount should permit access to device files.
+    /// Whether the mount should deny access to device files.
     pub fn no_devices(mut self, no_devices: bool) -> Self {
         self.no_devices = no_devices;
         self
     }
 
-    /// Whether the mount should allow binaries to be executed.
+    /// Whether the mount should not allow binaries to be executed.
     pub fn no_execution(mut self, no_execution: bool) -> Self {
         self.no_execution = no_execution;
         self
     }
 
-    /// Whether the mount should allow following symbolic links.
-    pub fn no_symlink_folowing(mut self, no_symlink_following: bool) -> Self {
+    /// Whether the mount should not allow following symbolic links.
+    pub fn no_symlink_following(mut self, no_symlink_following: bool) -> Self {
         self.no_symlink_following = no_symlink_following;
         self
     }
