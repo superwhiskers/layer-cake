@@ -361,12 +361,16 @@ where
     resolved
         .is_empty()
         .ok_or(PostSpawnGuestOtherError::NonzeroResolvedLen)?;
-    (resolved.capacity()
-        >= mappings
-            .size_hint()
-            .1
-            .ok_or(PostSpawnGuestOtherError::BufferTooSmall)?)
-    .ok_or(PostSpawnGuestOtherError::BufferTooSmall)?;
+
+    let mapping_size = mappings
+        .size_hint()
+        .1
+        .ok_or(PostSpawnGuestOtherError::BufferTooSmall)?;
+
+    (resolved.capacity() >= mapping_size)
+        .ok_or(PostSpawnGuestOtherError::BufferTooSmall)?;
+    (namespace_fd_scratch_space.capacity() >= mapping_size)
+        .ok_or(PostSpawnGuestOtherError::BufferTooSmall)?;
 
     let resolved = resolved.spare_capacity_mut();
 

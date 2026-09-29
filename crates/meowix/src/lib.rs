@@ -6,7 +6,6 @@
 #![feature(pattern_type_range_trait)]
 #![feature(const_trait_impl)]
 #![feature(maybe_uninit_array_assume_init)]
-#![feature(const_range)]
 //NOTE: required for the niche optimization in `fd`
 #![allow(internal_features)]
 #![feature(pattern_types)]
@@ -27,6 +26,12 @@ compile_error!("this crate only supports Linux");
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+
+/// Convenience export of the `linux-raw-sys` crate.
+///
+/// This crate provides most of the constants, type aliases, and structures
+/// meowix expects.
+pub use linux_raw_sys;
 
 mod abi;
 pub mod capabilities;

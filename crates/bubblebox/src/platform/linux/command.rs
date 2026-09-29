@@ -341,10 +341,14 @@ impl<'a> GuestInner<'a> {
         //      ensuring it has exited
         let _ignored = signal.take_if(|e| e.error() == Errno::SRCH);
 
-        //NOTE: we order this here to use the poll to ensure the process has
-        //      actually exited. i'm not sure if this is necessary but it seems
-        //      more robust
-        let wait = self.wait_internal();
+        let wait = if signal.is_none() {
+            //NOTE: we order this here to use the poll to ensure the process
+            //      has actually exited. i'm not sure if this is necessary but
+            //      it seems more robust
+            Some(self.wait_internal())
+        } else {
+            None
+        };
 
         let cgroup =
             if let Some(cgroups_destructor) = self.cgroups_destructor.take() {
@@ -354,10 +358,12 @@ impl<'a> GuestInner<'a> {
             };
 
         match wait {
-            Ok(status) if signal.is_none() && cgroup.is_none() => Ok(status),
+            Some(Ok(status)) if signal.is_none() && cgroup.is_none() => {
+                Ok(status)
+            }
             wait => Err(GuestTerminationError {
                 signal,
-                wait: wait.err(),
+                wait,
                 cgroup,
             }
             .into()),

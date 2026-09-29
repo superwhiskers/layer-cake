@@ -96,12 +96,10 @@ impl Errno {
     /// Construct an [`Errno`] from a Linux errno.
     #[inline]
     const fn from_errno(raw: u32) -> Option<Self> {
-        debug_assert!((1..=4095).contains(&raw), "`raw` must be in 1..=4095");
+        if let 1..=4095 = raw {
+            let encoded = raw.wrapping_neg() as u16;
 
-        let encoded = raw.wrapping_neg() as u16;
-
-        if let 0xf001..=0xffff = encoded {
-            //SAFETY: we just checked it is in the range
+            //SAFETY: we just ensured it is in 0xf001..=0xffff
             Some(unsafe { Self::from_u16_unchecked(encoded) })
         } else {
             None

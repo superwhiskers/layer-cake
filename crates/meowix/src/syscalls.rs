@@ -511,6 +511,7 @@ pub fn write(fd: impl AsFd, buffer: &[u8]) -> Result<usize, SyscallError> {
 /// `read(2)`.
 #[inline]
 pub fn read(fd: impl AsFd, buffer: &mut [u8]) -> Result<usize, SyscallError> {
+    //SAFETY: invariants on the provided types ensure this is a valid syscall
     let n_read = unsafe {
         syscall3(
             abi::READ,
@@ -530,6 +531,7 @@ pub fn read_uninit(
     fd: impl AsFd,
     buffer: &mut [MaybeUninit<u8>],
 ) -> Result<usize, SyscallError> {
+    //SAFETY: invariants on the provided types ensure this is a valid syscall
     let n_read = unsafe {
         syscall3(
             abi::READ,
@@ -1210,7 +1212,10 @@ pub fn sendto_nl_kernel(
 /// `exit(2)`.
 #[inline]
 pub fn exit(status: ffi::c_int) -> ! {
+    //SAFETY: passing any integer is safe here
     let _ = unsafe { syscall1(abi::EXIT_GROUP, Arg::from_int(status)) };
+
+    //SAFETY: passing any integer is safe here
     let _ = unsafe { syscall1(abi::EXIT, Arg::from_int(status)) };
 
     //NOTE: there is really no point to doing anything else here. the safest

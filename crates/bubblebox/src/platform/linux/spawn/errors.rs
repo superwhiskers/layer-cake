@@ -372,6 +372,7 @@ impl From<PostSpawnGuestWire> for Result<(), PostSpawnGuest> {
                         5 => Netlink::BufferTooSmall,
                         6 => Netlink::IntegerOverflow,
                         7 => Netlink::IncompleteWrite,
+                        8 => Netlink::AckTimeout,
                         _ => return Err(PostSpawnGuest::InvalidWireFormat),
                     }))
                 } else if subtag == u8::MAX {
@@ -379,10 +380,12 @@ impl From<PostSpawnGuestWire> for Result<(), PostSpawnGuest> {
                         Errno::from_raw_os_error(value)
                             .ok_or(PostSpawnGuest::InvalidWireFormat)?,
                     )))
+                } else if subtag == u8::MAX - 1 {
+                    Err(PostSpawnGuest::Netlink(Netlink::InvalidError(value)))
                 } else {
                     Err(PostSpawnGuest::Netlink(Netlink::Syscall(
                         SyscallError::new(
-                            subtag.into(),
+                            (subtag - 1).into(),
                             Errno::from_raw_os_error(value)
                                 .ok_or(PostSpawnGuest::InvalidWireFormat)?,
                         ),
