@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Keyring policy implementation.
+//! Keyring policy application.
 
 use linux_raw_sys::keyctl;
 use meowix::syscalls;

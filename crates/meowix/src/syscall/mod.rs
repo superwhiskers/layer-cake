@@ -3,6 +3,7 @@
 //! Tools for making direct syscalls in Rust code.
 
 use core::{
+    borrow::Borrow,
     ffi::{self, CStr},
     ptr,
 };
@@ -48,11 +49,22 @@ impl Arg {
         Self(ptr as usize as ffi::c_long)
     }
 
-    /// Construct a syscall argument from an optional immutable reference value
+    /// Construct a syscall argument from an optional immutable reference value.
     #[inline(always)]
     pub fn from_optional_ptr<T>(ptr: Option<&T>) -> Self {
         Self::from_ptr(if let Some(ptr) = ptr {
             ptr
+        } else {
+            ptr::null::<T>()
+        })
+    }
+
+    /// Construct a syscall argument from an optional immutable borrowable
+    /// value.
+    #[inline(always)]
+    pub fn from_optional_borrow<T>(ptr: Option<impl Borrow<T>>) -> Self {
+        Self::from_ptr(if let Some(ptr) = ptr {
+            ptr.borrow()
         } else {
             ptr::null::<T>()
         })
@@ -64,7 +76,7 @@ impl Arg {
         Self(ptr as usize as ffi::c_long)
     }
 
-    /// Construct a syscall argument from an optional mutable reference value
+    /// Construct a syscall argument from an optional mutable reference value.
     #[inline(always)]
     pub fn from_optional_mut_ptr<T>(ptr: Option<&mut T>) -> Self {
         Self::from_mut_ptr(if let Some(ptr) = ptr {
