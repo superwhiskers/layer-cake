@@ -307,6 +307,9 @@ pub enum Syscall {
     /// `keyctl(2)`.
     Keyctl = 47,
 
+    /// `prlimit64(2)8.
+    Prlimit64 = 48,
+
     /// Syscall variant was not recognized.
     Unknown = u8::MAX,
 }
@@ -362,6 +365,7 @@ impl fmt::Display for Syscall {
             Self::Fcntl => "fcntl(2)",
             Self::Seccomp => "seccomp(2)",
             Self::Keyctl => "keyctl(2)",
+            Self::Prlimit64 => "prlimit64(2)",
             Self::Unknown => "unknown syscall",
         })
     }
@@ -418,6 +422,7 @@ impl From<u8> for Syscall {
             45 => Syscall::Fcntl,
             46 => Syscall::Seccomp,
             47 => Syscall::Keyctl,
+            48 => Syscall::Prlimit64,
             _ => Syscall::Unknown,
         }
     }

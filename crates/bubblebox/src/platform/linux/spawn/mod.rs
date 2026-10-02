@@ -45,6 +45,7 @@ mod host;
 mod keyring;
 mod mounts;
 mod namespace;
+mod rlimit;
 mod wire;
 
 /// Action to take following sandbox setup.
@@ -306,6 +307,10 @@ where
                                 &mut guest_pipe,
                             )
                         }?;
+
+                        //NOTE: we do this late because limits may affect our
+                        //      setup
+                        rlimit::apply_resource_limit_policy(&policy.rlimits)?;
 
                         capabilities::set_ambient_capabilities(
                             policy.target_capabilities,

@@ -1510,3 +1510,48 @@ pub fn keyctl_set_reqkey_keyring(op: ffi::c_int) -> Result<i32, SyscallError> {
 
     Ok(previous_requested_key_keyring)
 }
+
+/// `prlimit64(2)` on the specified target.
+#[inline]
+pub fn prlimit64(
+    pid: Pid,
+    resource: ffi::c_uint,
+    new_rlimit: Option<impl Borrow<linux::rlimit64>>,
+    old_rlimit: Option<&mut linux::rlimit64>,
+) -> Result<(), SyscallError> {
+    //SAFETY: the invariants upon the types passed ensure this call is valid
+    let _ = unsafe {
+        syscall4(
+            abi::PRLIMIT64,
+            Arg::from_pid(pid),
+            Arg::from_uint(resource),
+            Arg::from_optional_borrow(new_rlimit),
+            Arg::from_optional_mut_ptr(old_rlimit),
+        )
+        .wrap_syscall(Syscall::Prlimit64)?
+    };
+
+    Ok(())
+}
+
+/// `prlimit64(2)` on the current process.
+#[inline]
+pub fn prlimit64_self(
+    resource: ffi::c_uint,
+    new_rlimit: Option<impl Borrow<linux::rlimit64>>,
+    old_rlimit: Option<&mut linux::rlimit64>,
+) -> Result<(), SyscallError> {
+    //SAFETY: the invariants upon the types passed ensure this call is valid
+    let _ = unsafe {
+        syscall4(
+            abi::PRLIMIT64,
+            Arg::from_int(0),
+            Arg::from_uint(resource),
+            Arg::from_optional_borrow(new_rlimit),
+            Arg::from_optional_mut_ptr(old_rlimit),
+        )
+        .wrap_syscall(Syscall::Prlimit64)?
+    };
+
+    Ok(())
+}

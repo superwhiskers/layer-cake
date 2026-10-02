@@ -4,9 +4,6 @@
 
 //TODO: add support for io_uring syscall denylists using the new api introduced
 //      in kernel 7.0
-//TODO: add rlimit support. modify cgroups documentation to reflect that there
-//      would then be another way to enforce resource usage (but cgroups are
-//      more powerful)
 //TODO: try to get `Clone` back on here somehow
 //TODO: try to make the builder use `&mut self` instead of `self`. it isn't
 //      super important right now, though
@@ -32,6 +29,7 @@ use fd::FdPolicy;
 use keyring::Keyring;
 use mounts::MountTree;
 use namespace::Namespaces;
+use rlimit::Rlimits;
 
 #[cfg(feature = "systemd-cgroups")]
 use super::cgroups::{SystemdCgroups, SystemdState};
@@ -41,6 +39,7 @@ pub mod fd;
 pub mod keyring;
 pub mod mounts;
 pub mod namespace;
+pub mod rlimit;
 
 /// Sandbox policy builder.
 #[derive(Debug)]
@@ -68,6 +67,9 @@ pub struct Policy<'a, CgroupsBackend> {
     /// Keyring policy.
     pub(super) keyring: Keyring,
 
+    /// Resource limit policy.
+    pub(super) rlimits: Rlimits,
+
     /// Seccomp filter.
     pub(super) seccomp_filter: Option<Cow<'a, [linux_ptrace::sock_filter]>>,
 }
@@ -85,6 +87,7 @@ where
             file_descriptors: Default::default(),
             new_session: true,
             keyring: Default::default(),
+            rlimits: Default::default(),
             //FIXME: provide a strict default filter. this is likely quite
             //       difficult
             seccomp_filter: None,
@@ -346,6 +349,15 @@ where
         configure: impl FnOnce(Keyring) -> Keyring,
     ) -> Self {
         self.keyring = configure(self.keyring);
+        self
+    }
+
+    /// Modify the resource limit policy of the sandbox.
+    pub fn rlimits(
+        mut self,
+        configure: impl FnOnce(Rlimits) -> Rlimits,
+    ) -> Self {
+        self.rlimits = configure(self.rlimits);
         self
     }
 
