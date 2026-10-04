@@ -3,7 +3,7 @@
 //! Resource limit policy application.
 
 use linux_raw_sys::general as linux;
-use meowix::syscalls;
+use meowix::{ids::Current, syscalls};
 
 use super::{
     super::policy::rlimit::Rlimits,
@@ -22,7 +22,8 @@ pub fn apply_resource_limit_policy(
         ($resource:expr, $limit:ident) => {
             if let Some($limit) = policy.$limit {
                 let (soft, hard) = $limit.into_raw();
-                syscalls::prlimit64_self(
+                syscalls::prlimit64(
+                    Current,
                     $resource,
                     Some(linux::rlimit64 {
                         rlim_cur: soft,

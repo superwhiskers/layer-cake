@@ -12,7 +12,7 @@ use linux_raw_sys::general as linux;
 use crate::{
     errno::Errno,
     fd::{AsFd, AsRawFd, BorrowedFd},
-    ids::Pid,
+    ids::{Pid, Process, RawPid},
     util::{AtFd, AtFdInner},
 };
 
@@ -161,6 +161,25 @@ impl Arg {
     #[inline(always)]
     pub fn from_pid(pid: Pid) -> Self {
         Self::from_int(pid.into_raw())
+    }
+
+    /// Construct a syscall argument from a [`Process`].
+    ///
+    /// This is usually correct based on convention. Always check the syscall
+    /// documentation or source code.
+    #[inline(always)]
+    pub fn from_process(process: Process) -> Self {
+        if let Process::Pid(pid) = process {
+            Self::from_pid(pid)
+        } else {
+            Self::from_raw_pid(0)
+        }
+    }
+
+    /// Construct a syscall argument from a raw pid.
+    #[inline(always)]
+    pub fn from_raw_pid(pid: RawPid) -> Self {
+        Self::from_int(pid)
     }
 }
 

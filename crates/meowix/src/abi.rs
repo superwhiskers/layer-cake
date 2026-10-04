@@ -61,6 +61,7 @@ pub const FCNTL: ffi::c_long = linux::__NR_fcntl as _;
 pub const SECCOMP: ffi::c_long = linux::__NR_seccomp as _;
 pub const KEYCTL: ffi::c_long = linux::__NR_keyctl as _;
 pub const PRLIMIT64: ffi::c_long = linux::__NR_prlimit64 as _;
+pub const SCHED_SETATTR: ffi::c_long = linux::__NR_sched_setattr as _;
 
 pub use architecture_specific::*;
 

@@ -97,6 +97,35 @@ impl Gid {
     }
 }
 
+/// Value indicating the current process.
+//TODO: leaving it as "current" opens up to supporting this special value in
+//      user id, group id places, but this may be too ambiguous and unintuitive?
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct Current;
+
+/// Wrapper over an optional process ID that indicates the current process if
+/// not provided.
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum Process {
+    /// Current process.
+    Current,
+
+    /// Process specified by a [`Pid`].
+    Pid(Pid),
+}
+
+impl From<Current> for Process {
+    fn from(_: Current) -> Self {
+        Self::Current
+    }
+}
+
+impl From<Pid> for Process {
+    fn from(pid: Pid) -> Self {
+        Self::Pid(pid)
+    }
+}
+
 /// Wrapper over a positive process ID.
 #[repr(transparent)]
 #[derive(Copy, Clone)]
