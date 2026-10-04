@@ -46,6 +46,7 @@ mod keyring;
 mod mounts;
 mod namespace;
 mod rlimit;
+mod scheduler;
 mod wire;
 
 /// Action to take following sandbox setup.
@@ -982,6 +983,8 @@ where
         permitted: policy.target_capabilities,
         inheritable: policy.target_capabilities,
     })?;
+
+    scheduler::apply_scheduler_policy(&guest_proc_fd, &policy.scheduler)?;
 
     //NOTE: this is intentionally ordered late so that once subordinate uid/gid
     //      behavior is implemented, this completely untethers the guest process

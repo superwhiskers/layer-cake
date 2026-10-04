@@ -30,6 +30,7 @@ use keyring::Keyring;
 use mounts::MountTree;
 use namespace::Namespaces;
 use rlimit::Rlimits;
+use scheduler::Scheduler;
 
 #[cfg(feature = "systemd-cgroups")]
 use super::cgroups::{SystemdCgroups, SystemdState};
@@ -40,6 +41,7 @@ pub mod keyring;
 pub mod mounts;
 pub mod namespace;
 pub mod rlimit;
+pub mod scheduler;
 
 /// Sandbox policy builder.
 #[derive(Debug)]
@@ -70,6 +72,9 @@ pub struct Policy<'a, CgroupsBackend> {
     /// Resource limit policy.
     pub(super) rlimits: Rlimits,
 
+    /// Scheduler policy.
+    pub(super) scheduler: Scheduler,
+
     /// Seccomp filter.
     pub(super) seccomp_filter: Option<Cow<'a, [linux_ptrace::sock_filter]>>,
 }
@@ -88,6 +93,7 @@ where
             new_session: true,
             keyring: Default::default(),
             rlimits: Default::default(),
+            scheduler: Default::default(),
             //FIXME: provide a strict default filter. this is likely quite
             //       difficult
             seccomp_filter: None,
@@ -358,6 +364,15 @@ where
         configure: impl FnOnce(Rlimits) -> Rlimits,
     ) -> Self {
         self.rlimits = configure(self.rlimits);
+        self
+    }
+
+    /// Modify the scheduler policy of the sandbox.
+    pub fn scheduler(
+        mut self,
+        configure: impl FnOnce(Scheduler) -> Scheduler,
+    ) -> Self {
+        self.scheduler = configure(self.scheduler);
         self
     }
 

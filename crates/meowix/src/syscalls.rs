@@ -21,7 +21,7 @@ use crate::{
     errno::Errno,
     errors::{ResultErrnoExt, Syscall, SyscallError},
     fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd},
-    ids::{Gid, Pid, Uid},
+    ids::{Gid, Pid, Process, Uid},
     syscall::*,
     util::AtFd,
 };
@@ -953,7 +953,7 @@ pub enum WaitFor<'fd> {
 
     /// Any child with the specified process group id.
     ///
-    /// If not provided wait for any child in the caller's process group.
+    /// If not provided, wait for any child in the caller's process group.
     Pgid(Option<Pid>),
 
     /// Any child.
@@ -1511,10 +1511,10 @@ pub fn keyctl_set_reqkey_keyring(op: ffi::c_int) -> Result<i32, SyscallError> {
     Ok(previous_requested_key_keyring)
 }
 
-/// `prlimit64(2)` on the specified target.
+/// `prlimit64(2)`.
 #[inline]
 pub fn prlimit64(
-    pid: Pid,
+    process: impl Into<Process>,
     resource: ffi::c_uint,
     new_rlimit: Option<impl Borrow<linux::rlimit64>>,
     old_rlimit: Option<&mut linux::rlimit64>,
@@ -1523,7 +1523,7 @@ pub fn prlimit64(
     let _ = unsafe {
         syscall4(
             abi::PRLIMIT64,
-            Arg::from_pid(pid),
+            Arg::from_process(process.into()),
             Arg::from_uint(resource),
             Arg::from_optional_borrow(new_rlimit),
             Arg::from_optional_mut_ptr(old_rlimit),
@@ -1534,23 +1534,74 @@ pub fn prlimit64(
     Ok(())
 }
 
-/// `prlimit64(2)` on the current process.
+/// Target of a `PR_SCHED_CORE(2const)` operation.
+#[derive(Copy, Clone, Debug)]
+pub enum CoreSchedulingTarget {
+    /// Thread of the specified process.
+    Thread(Process),
+
+    /// Thread group of the specified process.
+    ThreadGroup(Process),
+
+    /// Process group of the specified process.
+    ProcessGroup(Process),
+}
+
+impl CoreSchedulingTarget {
+    fn into_process_and_scope(self) -> (Process, u32) {
+        match self {
+            Self::Thread(process) => {
+                (process, prctl::PR_SCHED_CORE_SCOPE_THREAD)
+            }
+            Self::ThreadGroup(process) => {
+                (process, prctl::PR_SCHED_CORE_SCOPE_THREAD_GROUP)
+            }
+            Self::ProcessGroup(process) => {
+                (process, prctl::PR_SCHED_CORE_SCOPE_PROCESS_GROUP)
+            }
+        }
+    }
+}
+
+/// `prctl(2)` with `PR_SCHED_CORE_CREATE(2const)`.
 #[inline]
-pub fn prlimit64_self(
-    resource: ffi::c_uint,
-    new_rlimit: Option<impl Borrow<linux::rlimit64>>,
-    old_rlimit: Option<&mut linux::rlimit64>,
+pub fn create_core_scheduling_cookie(
+    target: CoreSchedulingTarget,
 ) -> Result<(), SyscallError> {
-    //SAFETY: the invariants upon the types passed ensure this call is valid
+    let (process, scope) = target.into_process_and_scope();
+
+    //SAFETY: the invariants upon the provided types ensure this call is valid
     let _ = unsafe {
-        syscall4(
-            abi::PRLIMIT64,
-            Arg::from_int(0),
-            Arg::from_uint(resource),
-            Arg::from_optional_borrow(new_rlimit),
-            Arg::from_optional_mut_ptr(old_rlimit),
+        syscall5(
+            abi::PRCTL,
+            Arg::from_uint(prctl::PR_SCHED_CORE),
+            Arg::from_uint(prctl::PR_SCHED_CORE_CREATE),
+            Arg::from_process(process),
+            Arg::from_uint(scope),
+            Arg::from_mut_ptr(ptr::null_mut::<ffi::c_longlong>()),
         )
-        .wrap_syscall(Syscall::Prlimit64)?
+        .wrap_syscall(Syscall::Prctl)?
+    };
+
+    Ok(())
+}
+
+/// `sched_setattr(2)`.
+#[inline]
+pub fn sched_setattr(
+    process: impl Into<Process>,
+    mut attr: impl BorrowMut<linux::sched_attr>,
+    flags: ffi::c_uint,
+) -> Result<(), SyscallError> {
+    //SAFETY: the invariants upon the provided types ensure this call is valid
+    let _ = unsafe {
+        syscall3(
+            abi::SCHED_SETATTR,
+            Arg::from_process(process.into()),
+            Arg::from_mut_ptr(attr.borrow_mut()),
+            Arg::from_uint(flags),
+        )
+        .wrap_syscall(Syscall::SchedSetattr)?
     };
 
     Ok(())
