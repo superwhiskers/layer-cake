@@ -102,7 +102,7 @@ impl From<SyscallError> for Netlink {
 }
 
 /// Specialized syscall error wrapper for tagging plain error values with the
-/// syscallbeing called.
+/// syscall being called.
 #[derive(Copy, Clone, Debug)]
 pub struct SyscallError {
     /// Syscall being called.

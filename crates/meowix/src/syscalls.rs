@@ -1525,7 +1525,11 @@ pub fn prlimit64(
             abi::PRLIMIT64,
             Arg::from_process(process.into()),
             Arg::from_uint(resource),
-            Arg::from_optional_borrow(new_rlimit),
+            Arg::from_ptr(if let Some(new_rlimit) = new_rlimit {
+                new_rlimit.borrow()
+            } else {
+                ptr::null::<linux::rlimit64>()
+            }),
             Arg::from_optional_mut_ptr(old_rlimit),
         )
         .wrap_syscall(Syscall::Prlimit64)?

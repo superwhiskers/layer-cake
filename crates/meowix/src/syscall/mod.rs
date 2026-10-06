@@ -3,7 +3,6 @@
 //! Tools for making direct syscalls in Rust code.
 
 use core::{
-    borrow::Borrow,
     ffi::{self, CStr},
     ptr,
 };
@@ -54,17 +53,6 @@ impl Arg {
     pub fn from_optional_ptr<T>(ptr: Option<&T>) -> Self {
         Self::from_ptr(if let Some(ptr) = ptr {
             ptr
-        } else {
-            ptr::null::<T>()
-        })
-    }
-
-    /// Construct a syscall argument from an optional immutable borrowable
-    /// value.
-    #[inline(always)]
-    pub fn from_optional_borrow<T>(ptr: Option<impl Borrow<T>>) -> Self {
-        Self::from_ptr(if let Some(ptr) = ptr {
-            ptr.borrow()
         } else {
             ptr::null::<T>()
         })

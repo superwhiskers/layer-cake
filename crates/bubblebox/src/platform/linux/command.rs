@@ -62,6 +62,14 @@ pub(crate) struct CommandInner {
     pub(super) working_directory: Option<Guest>,
 }
 
+//SAFETY: the reason it isn't auto-derived is the raw pointer, which is
+//        semantically equivalent to a [`CString`]. see the documentation for
+//        the `arguments` field for more information
+unsafe impl Send for CommandInner {}
+
+//SAFETY: see the documentation for the `Send` impl
+unsafe impl Sync for CommandInner {}
+
 impl CommandInner {
     /// Construct a new command for launching the guest process at the path
     /// `program` within the sandbox.
