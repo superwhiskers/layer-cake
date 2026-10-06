@@ -7,8 +7,9 @@ use meowix::{
     errno::Errno,
     fd::AsFd,
     ids::Current,
-    open_beneath_and_write,
+    retry_on_interrupt,
     syscalls::{self, CoreSchedulingTarget},
+    write_checked,
 };
 use std::mem;
 
@@ -28,74 +29,89 @@ pub fn apply_scheduler_policy(
     proc_fd: impl AsFd,
     policy: &Scheduler,
 ) -> Result<(), PostSpawnGuestError> {
-    //SAFETY: c structs are valid when zeroed
-    let mut sched_attr = unsafe { mem::zeroed::<linux::sched_attr>() };
+    if let Some(ref attributes) = policy.attributes {
+        //SAFETY: c structs are valid when zeroed
+        let mut sched_attr = unsafe { mem::zeroed::<linux::sched_attr>() };
 
-    sched_attr.size = size_of::<linux::sched_attr>() as u32;
+        sched_attr.size = size_of::<linux::sched_attr>() as u32;
 
-    if policy.reset_on_fork {
-        sched_attr.sched_flags |= linux::SCHED_FLAG_RESET_ON_FORK as u64;
-    }
+        if attributes.reset_on_fork {
+            sched_attr.sched_flags |= linux::SCHED_FLAG_RESET_ON_FORK as u64;
+        }
 
-    match policy.policy {
-        Policy::Normal { nice } => {
-            sched_attr.sched_policy = linux::SCHED_NORMAL;
-            sched_attr.sched_nice = nice;
-        }
-        Policy::Batch { nice } => {
-            sched_attr.sched_policy = linux::SCHED_BATCH;
-            sched_attr.sched_nice = nice;
-        }
-        Policy::Idle => {
-            sched_attr.sched_policy = linux::SCHED_IDLE;
-        }
-        Policy::Fifo { priority } => {
-            sched_attr.sched_policy = linux::SCHED_FIFO;
-            sched_attr.sched_priority = priority;
-        }
-        Policy::RoundRobin { priority } => {
-            sched_attr.sched_policy = linux::SCHED_RR;
-            sched_attr.sched_priority = priority;
-        }
-        Policy::Deadline {
-            runtime,
-            deadline,
-            period,
-            allow_reclaim,
-            signal_on_overrun,
-        } => {
-            sched_attr.sched_policy = linux::SCHED_DEADLINE;
-            sched_attr.sched_runtime = runtime;
-            sched_attr.sched_deadline = deadline;
-            sched_attr.sched_period = period;
-
-            if allow_reclaim {
-                sched_attr.sched_flags |= linux::SCHED_FLAG_RECLAIM as u64;
+        match attributes.policy {
+            Policy::Normal { nice } => {
+                sched_attr.sched_policy = linux::SCHED_NORMAL;
+                sched_attr.sched_nice = nice;
             }
+            Policy::Batch { nice } => {
+                sched_attr.sched_policy = linux::SCHED_BATCH;
+                sched_attr.sched_nice = nice;
+            }
+            Policy::Idle => {
+                sched_attr.sched_policy = linux::SCHED_IDLE;
+            }
+            Policy::Fifo { priority } => {
+                sched_attr.sched_policy = linux::SCHED_FIFO;
+                sched_attr.sched_priority = priority;
+            }
+            Policy::RoundRobin { priority } => {
+                sched_attr.sched_policy = linux::SCHED_RR;
+                sched_attr.sched_priority = priority;
+            }
+            Policy::Deadline {
+                runtime,
+                deadline,
+                period,
+                allow_reclaim,
+                signal_on_overrun,
+            } => {
+                sched_attr.sched_policy = linux::SCHED_DEADLINE;
+                sched_attr.sched_runtime = runtime;
+                sched_attr.sched_deadline = deadline;
+                sched_attr.sched_period = period;
 
-            if signal_on_overrun {
-                sched_attr.sched_flags |= linux::SCHED_FLAG_DL_OVERRUN as u64;
+                if allow_reclaim {
+                    sched_attr.sched_flags |= linux::SCHED_FLAG_RECLAIM as u64;
+                }
+
+                if signal_on_overrun {
+                    sched_attr.sched_flags |=
+                        linux::SCHED_FLAG_DL_OVERRUN as u64;
+                }
             }
         }
-    }
 
-    if let Some(min_utilization) = policy.min_utilization {
-        sched_attr.sched_flags |= linux::SCHED_FLAG_UTIL_CLAMP_MIN as u64;
-        sched_attr.sched_util_min = min_utilization;
-    }
+        if let Some(min_utilization) = attributes.min_utilization {
+            sched_attr.sched_flags |= linux::SCHED_FLAG_UTIL_CLAMP_MIN as u64;
+            sched_attr.sched_util_min = min_utilization;
+        }
 
-    if let Some(max_utilization) = policy.max_utilization {
-        sched_attr.sched_flags |= linux::SCHED_FLAG_UTIL_CLAMP_MAX as u64;
-        sched_attr.sched_util_max = max_utilization;
-    }
+        if let Some(max_utilization) = attributes.max_utilization {
+            sched_attr.sched_flags |= linux::SCHED_FLAG_UTIL_CLAMP_MAX as u64;
+            sched_attr.sched_util_max = max_utilization;
+        }
 
-    syscalls::sched_setattr(Current, sched_attr, 0)?;
+        syscalls::sched_setattr(Current, sched_attr, 0)?;
+    }
 
     if let Some(oom_score_adjustment) = policy.oom_score_adjustment {
         let mut intermediary = itoa::Buffer::new();
-        open_beneath_and_write!(
-            proc_fd.as_fd(),
-            c"self/oom_score_adj",
+        let oom_score_adj_fd = retry_on_interrupt!({
+            syscalls::openat2(
+                &proc_fd,
+                c"self/oom_score_adj",
+                linux::open_how {
+                    flags: (linux::O_WRONLY | linux::O_CLOEXEC) as u64,
+                    mode: 0,
+                    resolve: (linux::RESOLVE_BENEATH
+                        | linux::RESOLVE_NO_MAGICLINKS)
+                        as u64,
+                },
+            )
+        })?;
+        write_checked!(
+            &oom_score_adj_fd,
             intermediary.format(oom_score_adjustment).as_bytes()
         );
     }

@@ -498,14 +498,16 @@ where
 
     let guest_proc_fs_fd = syscalls::fsopen(c"proc", linux::FSOPEN_CLOEXEC)?;
 
-    //NOTE: we can't blanket set subset=pid due to the userns disable trick
-    //      requiring more access, but we also need to set this to support
-    //      container runtimes which overmount certain /proc files without
-    //      assuming a proc location? there may be a better solution but this
-    //       works for now
+    //NOTE: we can't blanket set subset=pid due to the userns disable trick and
+    //      vsock handling requiring more access, but we also need to set this
+    //      to support container runtimes which overmount certain /proc files
+    //      without assuming a proc location? there may be a better solution
+    //      but this works for now
     //FIXME: implement a workaround by allowing the caller to provide a file
     //       descriptor to the full procfs as opposed to creating one ourselves
-    if !policy.namespaces.user.disable_userns {
+    if !policy.namespaces.user.disable_userns
+        && policy.namespaces.network.is_shared()
+    {
         syscalls::fsconfig_set_string(&guest_proc_fs_fd, c"subset", c"pid")?;
     }
 

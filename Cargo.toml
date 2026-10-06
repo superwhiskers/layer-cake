@@ -41,7 +41,7 @@ features = ["v4"]
 #TODO: disabled temporarily until updates are merged
 # version = "0.12"
 git = "https://github.com/superwhiskers/linux-raw-sys"
-features = ["netlink", "net", "errno", "general", "ioctl", "prctl", "ptrace", "keyctl"]
+features = ["netlink", "net", "errno", "general", "ioctl", "prctl", "ptrace", "keyctl", "io_uring"]
 
 [workspace.dependencies.futures]
 version = "0.3"

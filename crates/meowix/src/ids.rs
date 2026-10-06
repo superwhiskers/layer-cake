@@ -13,10 +13,10 @@ use core::{
 use linux_raw_sys::general as linux;
 
 /// User ID type used by the kernel.
-pub type RawUid = linux::__kernel_uid_t;
+pub type RawUid = linux::__kernel_uid32_t;
 
 /// Group ID type used by the kernel.
-pub type RawGid = linux::__kernel_gid_t;
+pub type RawGid = linux::__kernel_gid32_t;
 
 /// Process ID type used by the kernel.
 pub type RawPid = linux::__kernel_pid_t;

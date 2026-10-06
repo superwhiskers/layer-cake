@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Scheduler attribute policy implementation.
+//! Scheduler policy implementation.
 
-/// Scheduler attribute policy.
+/// Scheduler policy.
 ///
-/// Configures the action to take regarding [scheduler policy and attributes]
-/// applied to the guest's initial process.
+/// This structure holds configuration values associated with the kernel's
+/// scheduler. These include but are not limited to:
+///
+/// - Scheduler policy
+/// - Utilization hints
+/// - Core scheduling behavior
+/// - Whether to reset privileged scheduling policies on fork
 ///
 /// Clearing limits does not erase them, as with [the cgroup
 /// policy](super::super::cgroups::policy). It only causes the limits from the
@@ -14,19 +19,127 @@
 ///
 /// # Notes
 ///
-/// By default, no changes to the scheduling policy of the environment is made
-/// outside of resetting the [`nice(2)`] value to zero and the policy being set
-/// to `SCHED_NORMAL`. These are sane defaults.
+/// By default, all of these attributes are inherited by the guest as-is, as
+/// many of these are sensitive to the environment of the host process, and
+/// would require probing parts of the environment to set automatically.
 ///
 /// # Warning
 ///
 /// Some scheduler policies may need `CAP_SYS_NICE` to use.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Scheduler {
+    /// Scheduler attribute policy.
+    ///
+    /// This structure contains options to set with the [`sched_setattr(2)`]
+    /// syscall. These are handled separately due to it requiring the scheduler
+    /// policy to be set when called, as there is no way to set a "default"
+    /// scheduler policy without inspecting the host's environment.
+    ///
+    /// [`sched_setattr(2)`]: https://www.man7.org/linux/man-pages/man2/sched_setattr.2.html
+    pub(crate) attributes: Option<Attributes>,
+
+    /// OOM-killer score adjustment.
+    ///
+    /// See [`proc_pid_oom_score_adj(5)`] for more details.
+    ///
+    /// [`proc_pid_oom_score_adj(5)`]: https://www.man7.org/linux/man-pages/man5/proc_pid_oom_score_adj.5.html
+    pub(crate) oom_score_adjustment: Option<u16>,
+
+    /// Whether to use [`PR_SCHED_CORE`] to prevent guest processes from being
+    /// scheduled on a core with host processes.
+    ///
+    /// [`PR_SCHED_CORE`]: https://www.kernel.org/doc/html/latest/admin-guide/hw-vuln/core-scheduling.html
+    pub(crate) create_core_scheduling_cookie: bool,
+}
+
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self {
+            //NOTE: we can't set this without checking first as the host may
+            //      have a nice value above any arbitrary threshold we set aside
+            //      from the maximum. the maximum is not a sane default
+            attributes: None,
+            //NOTE: we can't safely set this without checking first. the floor
+            //      is arbitrary
+            oom_score_adjustment: None,
+            //NOTE: in most cases your threat model will not include things
+            //      prevented by this
+            create_core_scheduling_cookie: false,
+        }
+    }
+}
+
+impl Scheduler {
+    /// Update the scheduler attributes of the guest process.
+    ///
+    /// These include any properties set through the [`sched_setattr(2)`]
+    /// syscall. By default, these are not set. Calling this method without
+    ///
+    /// [`sched_setattr(2)`]: https://www.man7.org/linux/man-pages/man2/sched_setattr.2.html
+    pub fn attributes(
+        mut self,
+        configure: impl FnOnce(Attributes) -> Attributes,
+    ) -> Self {
+        self.attributes = Some(configure(self.attributes.unwrap_or_default()));
+        self
+    }
+
+    /// Clear the scheduler attributes of the guest process, if they have been
+    /// set.
+    pub fn clear_attributes(mut self) -> Self {
+        self.attributes = None;
+        self
+    }
+
+    /// Update the OOM-killer score adjustment.
+    ///
+    /// See [`proc_pid_oom_score_adj(5)`] for more details.
+    ///
+    /// # Warning
+    ///
+    /// Setting this may fail due to the hidden process-specific
+    /// `oom_score_adj_min` value dictating what the minimum acceptable value
+    /// is. Consider probing this value prior to setting it in the guest.
+    ///
+    /// [`proc_pid_oom_score_adj(5)`]: https://www.man7.org/linux/man-pages/man5/proc_pid_oom_score_adj.5.html
+    pub fn oom_score_adjustment(mut self, adj: u16) -> Self {
+        self.oom_score_adjustment = Some(adj);
+        self
+    }
+
+    /// Clear the OOM-killer score adjustment, if one has been set.
+    pub fn clear_oom_score_adjustment(mut self) -> Self {
+        self.oom_score_adjustment = None;
+        self
+    }
+
+    /// Whether to use [`PR_SCHED_CORE`] to prevent guest processes from being
+    /// scheduled on a core with host processes.
+    ///
+    /// [`PR_SCHED_CORE`]: https://www.kernel.org/doc/html/latest/admin-guide/hw-vuln/core-scheduling.html
+    pub fn create_core_scheduling_cookie(mut self, create: bool) -> Self {
+        self.create_core_scheduling_cookie = create;
+        self
+    }
+}
+
+/// Process scheduler attributes.
+///
+/// Configures the action to take regarding [scheduler policy and attributes]
+/// applied to the guest's initial process.
+///
+/// # Notes
+///
+/// The default policy is to reset the scheduler policy to the normal policy
+/// with the [`nice(2)`] value set to zero. This will not always work, as the
+/// floor may be higher than zero. It is the caller's responsibility to ensure
+/// if scheduler attributes are set that they are valid given the host's
+/// environment.
 ///
 /// [scheduler policy and attributes]: https://www.man7.org/linux/man-pages/man7/sched.7.html
 /// [`nice(2)`]: https://www.man7.org/linux/man-pages/man2/nice.2.html
-//TODO: add `sched_setaffinity(2)` support
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Scheduler {
+pub struct Attributes {
     /// Whether to reset privileged scheduling policies for child processes.
     ///
     /// See [`sched(7)`] for more details.
@@ -50,41 +163,22 @@ pub struct Scheduler {
     ///
     /// [`sched_setattr(2)`]: https://www.man7.org/linux/man-pages/man2/sched_setattr.2.html
     pub(crate) max_utilization: Option<u32>,
-
-    /// OOM-killer score adjustment.
-    ///
-    /// See [`proc_pid_oom_score_adj(5)`] for more details.
-    ///
-    /// [`proc_pid_oom_score_adj(5)`]: https://www.man7.org/linux/man-pages/man5/proc_pid_oom_score_adj.5.html
-    pub(crate) oom_score_adjustment: Option<u16>,
-
-    /// Whether to use [`PR_SCHED_CORE`] to prevent guest processes from being
-    /// scheduled on a core with host processes.
-    ///
-    /// [`PR_SCHED_CORE`]: https://www.kernel.org/doc/html/latest/admin-guide/hw-vuln/core-scheduling.html
-    pub(crate) create_core_scheduling_cookie: bool,
 }
 
-impl Default for Scheduler {
+impl Default for Attributes {
     fn default() -> Self {
         Self {
-            //NOTE: this isn't important because the defaults don't use
-            //      privileged scheduling policies
             reset_on_fork: false,
+            //NOTE: this will not always work, but by default this is off
+            //      anyway
             policy: Policy::Normal { nice: 0 },
             min_utilization: None,
             max_utilization: None,
-            //NOTE: we can't safely set this without checking first. the floor
-            //      is arbitrary
-            oom_score_adjustment: None,
-            //NOTE: in most cases your threat model will not include things
-            //      prevented by this
-            create_core_scheduling_cookie: false,
         }
     }
 }
 
-impl Scheduler {
+impl Attributes {
     /// Whether to reset privileged scheduling policies for child processes.
     ///
     /// See [`sched(7)`] for more details.
@@ -240,37 +334,6 @@ impl Scheduler {
     /// Clear a maximum utilization hint, if one has been set.
     pub fn clear_max_utilization(mut self) -> Self {
         self.max_utilization = None;
-        self
-    }
-
-    /// Update the OOM-killer score adjustment.
-    ///
-    /// See [`proc_pid_oom_score_adj(5)`] for more details.
-    ///
-    /// # Warning
-    ///
-    /// Setting this may fail due to the hidden process-specific
-    /// `oom_score_adj_min` value dictating what the minimum acceptable value
-    /// is. Consider probing this value prior to setting it in the guest.
-    ///
-    /// [`proc_pid_oom_score_adj(5)`]: https://www.man7.org/linux/man-pages/man5/proc_pid_oom_score_adj.5.html
-    pub fn oom_score_adjustment(mut self, adj: u16) -> Self {
-        self.oom_score_adjustment = Some(adj);
-        self
-    }
-
-    /// Clear the OOM-killer score adjustment, if one has been set.
-    pub fn clear_oom_score_adjustment(mut self) -> Self {
-        self.oom_score_adjustment = None;
-        self
-    }
-
-    /// Whether to use [`PR_SCHED_CORE`] to prevent guest processes from being
-    /// scheduled on a core with host processes.
-    ///
-    /// [`PR_SCHED_CORE`]: https://www.kernel.org/doc/html/latest/admin-guide/hw-vuln/core-scheduling.html
-    pub fn create_core_scheduling_cookie(mut self, create: bool) -> Self {
-        self.create_core_scheduling_cookie = create;
         self
     }
 }

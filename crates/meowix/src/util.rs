@@ -432,14 +432,14 @@ macro_rules! open_beneath_and_write {
             $crate::syscalls::openat2(
                 $fd,
                 $path,
-                ::linux_raw_sys::general::open_how {
-                    flags: (::linux_raw_sys::general::O_WRONLY
-                        | ::linux_raw_sys::general::O_CLOEXEC)
+                $crate::linux_raw_sys::general::open_how {
+                    flags: ($crate::linux_raw_sys::general::O_WRONLY
+                        | $crate::linux_raw_sys::general::O_CLOEXEC)
                         as u64,
                     mode: 0,
-                    resolve: (::linux_raw_sys::general::RESOLVE_BENEATH
-                        | ::linux_raw_sys::general::RESOLVE_NO_MAGICLINKS
-                        | ::linux_raw_sys::general::RESOLVE_NO_SYMLINKS)
+                    resolve: ($crate::linux_raw_sys::general::RESOLVE_BENEATH
+                        | $crate::linux_raw_sys::general::RESOLVE_NO_MAGICLINKS
+                        | $crate::linux_raw_sys::general::RESOLVE_NO_SYMLINKS)
                         as u64,
                 },
             )

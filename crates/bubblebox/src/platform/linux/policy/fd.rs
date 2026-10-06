@@ -29,6 +29,7 @@ pub(in super::super) enum Action<'a> {
 /// conditions hold:
 /// - No file descriptor which is the source of a mapped file descriptor is also
 ///   mapped itself.
+///   - If a source is ignored, that is fine.
 /// - No file descriptor is mapped to itself.
 /// - No file descriptor value is negative.
 pub(in super::super) fn is_valid_fd_policy(
@@ -45,7 +46,13 @@ pub(in super::super) fn is_valid_fd_policy(
         })
         .collect::<HashSet<_>>();
 
-    for fd in policy_map.keys() {
+    for (fd, action) in policy_map {
+        if matches!(action, Action::Ignore) {
+            //NOTE: if a source is ignored, there there isn't any ordering
+            //      constraint required to perform the map
+            continue;
+        }
+
         if sources.contains(fd) || *fd < 0 {
             return false;
         }
