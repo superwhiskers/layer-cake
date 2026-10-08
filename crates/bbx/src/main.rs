@@ -16,6 +16,7 @@
 //TODO: substitutions for $uid, $gid in args when used in the zip bundle to
 //      allow binding directories like /run/$uid/...
 //TODO: fd mapping, mostly to test the pipe remapping works
+//TODO: avoid reading the entire binary to find a bundle. add a limit.
 
 use anyhow::Context;
 use bubblebox::{
@@ -29,7 +30,7 @@ use bubblebox::{
             ids::{Gid, Uid},
             mode::Mode,
         },
-        mounts::{Mount, ProcHidepid, ProcSubset},
+        mounts::{Mount, ProcHidepid, ProcSubset, TmpfsSize},
         paths::{HostDirectory, HostFile},
         policy::{
             Policy,
@@ -439,12 +440,30 @@ fn interpret_policy<'a>(
                 })?;
             }
             Long("tmpfs") => {
-                let size = parser
+                let size = if let Some(size) = parser
                     .optional_value()
-                    .map(|v| v.to_string_lossy().into_owned());
+                    .map(|v| v.to_string_lossy().into_owned())
+                {
+                    //NOTE: this is kind of dumb but aside from properly
+                    //      parsing the input which would be a lot of work,
+                    //      there's not many other options
+                    if let Some(percent) = size.strip_suffix("%") {
+                        TmpfsSize::Percent(percent.parse().context(
+                            "failed to parse tmpfs size parameter as a percentage",
+                        )?)
+                    } else {
+                        TmpfsSize::Bytes(size.parse().context(
+                            "failed to parse tmpfs size parameter as a byte count",
+                        )?)
+                    }
+                } else {
+                    //NOTE: this is half the default linux tmpfs size (50%)
+                    TmpfsSize::Percent(25)
+                };
+
                 let guest_path = Guest::new(parser.value()?)?;
                 policy = policy.mount_tree(|tree| {
-                    tree.mount(Mount::tmpfs(size, mode), guest_path)
+                    tree.mount(Mount::tmpfs(size, None, mode), guest_path)
                 })?;
             }
             Long("set-env") => {

@@ -7,6 +7,7 @@
 //TODO: try to get `Clone` back on here somehow
 //TODO: try to make the builder use `&mut self` instead of `self`. it isn't
 //      super important right now, though
+//TODO: avoid repeated policy validation
 
 use linux_raw_sys::ptrace as linux_ptrace;
 use meowix::{
@@ -117,6 +118,12 @@ impl<'a> Policy<'a, NullCgroups> {
 
     /// Executes the given [`Command`], sandboxed according to this policy.
     ///
+    /// # Warning
+    ///
+    /// This method spawns the given [`Command`] as PID 1 inside a new PID
+    /// namespace. In order for orphan processes to be reaped correctly, it will
+    /// have to handle them itself or to delegate this duty to another process.
+    ///
     /// # Errors
     ///
     /// This method errors if setting up the sandbox fails.
@@ -173,6 +180,12 @@ impl<'a> Policy<'a, OwnedFdCgroups> {
     /// cgroups hierarchy which is writeable by the process. See the
     /// documentation of [`Policy::fd_cgroups`] for more details.
     ///
+    /// # Warning
+    ///
+    /// This method spawns the given [`Command`] as PID 1 inside a new PID
+    /// namespace. In order for orphan processes to be reaped correctly, it will
+    /// have to handle them itself or to delegate this duty to another process.
+    ///
     /// # Errors
     ///
     /// This method errors if setting up the sandbox fails.
@@ -200,6 +213,12 @@ impl<'a> Policy<'a, SystemdCgroups> {
 
     /// Executes the given [`Command`], sandboxed according to this policy.
     ///
+    /// # Warning
+    ///
+    /// This method spawns the given [`Command`] as PID 1 inside a new PID
+    /// namespace. In order for orphan processes to be reaped correctly, it will
+    /// have to handle them itself or to delegate this duty to another process.
+    ///
     /// # Errors
     ///
     /// This method errors if setting up the sandbox fails.
@@ -214,10 +233,20 @@ where
 {
     /// Executes the given [`Command`], sandboxed according to this policy.
     ///
+    /// This method requires you to provide the cgroups state yourself. Unless
+    /// you are implementing your own cgroups backend, this method should not be
+    /// necessary.
+    ///
+    /// # Warning
+    ///
+    /// This method spawns the given [`Command`] as PID 1 inside a new PID
+    /// namespace. In order for orphan processes to be reaped correctly, it will
+    /// have to handle them itself or to delegate this duty to another process.
+    ///
     /// # Errors
     ///
     /// This method errors if setting up the sandbox fails.
-    fn spawn_with(
+    pub fn spawn_with(
         &self,
         command: &Command,
         cgroups_state: CgroupsBackend::State,

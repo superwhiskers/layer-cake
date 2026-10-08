@@ -21,6 +21,8 @@
 //! responsible for ensuring their use of non-`alloc` APIs are valid for the
 //! current process state.
 
+//TODO: add builder support for io_uring filtering and seccomp filtering
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("this crate only supports Linux");
 

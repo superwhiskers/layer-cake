@@ -311,6 +311,8 @@ pub trait FdReadWriteExt: AsFd {
 impl<T> FdReadWriteExt for T where T: AsFd {}
 
 /// Representation of string types that may become a [`CStr`].
+//TODO: could be useful to adapt plain integer types for convenience, would
+//      remove a stack allocation
 pub trait WithCStr {
     /// Converts this value into a [`CStr`] and calls the provided closure with
     /// the string.

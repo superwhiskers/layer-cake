@@ -7,6 +7,7 @@
 //TODO: consider creating an error type specifically for paths
 //TODO: write an fd type abstraction so we can accept non-meowix fds where
 //      reasonable. would need to cover bare fd input + `AtFd`.
+//TODO: allow representing `/` in `GuestInner`
 
 use linux_raw_sys::general as linux;
 use meowix::{
@@ -95,19 +96,32 @@ pub fn same_file_identity<'fd>(
 /// eliminate [TOCTOU] here. As this library is designed to permit every feature
 /// to work in an unprivileged context, we cannot assume we can do
 /// `open_tree_attr(OPEN_TREE_CLONE)` outright. So, we do the next best thing
-/// and store three things about a host file:
+/// and store four things about a host file:
 ///
 /// - A file descriptor to its parent directory.
 /// - Its name.
 /// - A file descriptor to it.
+/// - Whether or not the file descriptor refers to a symlink or the file pointed
+///   to by one.
 ///
-/// With these three, we can perform an `open_tree_attr(OPEN_TREE_NAMESPACE)`
+/// With these four, we can perform an `open_tree_attr(OPEN_TREE_NAMESPACE)`
 /// dance where we 1) create a mount namespace containing the contents of the
 /// parent directory 2) enter the mount namespace and 3) perform
 /// `open_tree_attr(OPEN_TREE_CLONE)` on the file. Using the file descriptor we
 /// created to the file earlier, we are then able to double check that the mount
 /// we just captured of the file is actually the original file. This is the best
 /// we are able to achieve here.
+///
+/// # Warning
+///
+/// Before using any of these methods, if your goal is to handle symbolic links
+/// by resolving them to their destination and then bind-mounting that, then the
+/// appropriate mechanism is to use [`Path::canonicalize`] first, then create a
+/// [`HostFile`]. This is because none of these methods will resolve a symbolic
+/// link that way for you, as that would violate the "first observation of file
+/// establishes identity" rule bubblebox is built on. To my knowledge, there is
+/// no way to resolve a symbolic link at a destination and 1) get an `O_PATH`
+/// file descriptor to it as well as 2) know its full path.
 ///
 /// [TOCTOU]: https://en.wikipedia.org/wiki/Time-of-check_to_time-of-use
 #[derive(Debug)]
@@ -120,19 +134,30 @@ pub struct HostFile {
 
     /// File descriptor of the file itself.
     fd: OwnedFd,
+
+    /// Whether or not this is referencing a symlink at `dirfd/name` or the
+    /// file it points to.
+    ///
+    /// This is relevant if `name` is a symlink, as `open_tree_attr(2)` will
+    /// fail if the destination is not present in the subtree we capture with
+    /// `OPEN_TREE_NAMESPACE`, and that may also result in the wrong thing
+    /// being mounted. This flag serves as a disambiguator for the user's
+    /// intent.
+    is_symlink: bool,
 }
 
 impl HostFile {
     /// Convert this [`HostFile`] into its components.
-    pub fn into_parts(self) -> (OwnedFd, CString, OwnedFd) {
-        (self.dirfd, self.name, self.fd)
+    ///
+    /// This is the directory file descriptor
+    pub fn into_parts(self) -> (OwnedFd, CString, OwnedFd, bool) {
+        (self.dirfd, self.name, self.fd, self.is_symlink)
     }
 
+    //TODO: determine if anyone would benefit from `RESOLVE_NO_SYMLINKS`
+    //      without `O_NOFOLLOW`
+
     /// Creates a new [`HostFile`] from the given [`Path`].
-    ///
-    /// This method breaks apart the [`Path`] into the path of the parent
-    /// directory and the file name, then opens a file descriptor to the parent
-    /// directory.
     ///
     /// # Errors
     ///
@@ -143,12 +168,20 @@ impl HostFile {
         Self::open_at_internal::<0, 0>(Cwd, path)
     }
 
+    /// Creates a new [`HostFile`] from the given [`Path`], not resolving
+    /// trailing symlinks.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the path provided did not refer to a file.
+    /// Additionally, it errors if opening either the directory file descirptor
+    /// or the file descriptor used to check the identity of the file fails.
+    pub fn open_nofollow(path: impl AsRef<Path>) -> Result<Self, Error> {
+        Self::open_at_internal::<{ linux::O_NOFOLLOW }, 0>(Cwd, path)
+    }
+
     /// Creates a new [`HostFile`] from the given [`Path`], opening the
     /// file descriptor relative to the given path file descriptor.
-    ///
-    /// This method breaks apart the [`Path`] into the path of the parent
-    /// directory and the file name, then opens a file descriptor to the parent
-    /// directory.
     ///
     /// # Errors
     ///
@@ -163,12 +196,8 @@ impl HostFile {
     }
 
     /// Creates a new [`HostFile`] from the given [`Path`], opening the file
-    /// descriptor relative to the given path file descriptor without resolving
-    /// symlinks.
-    ///
-    /// This method breaks apart the [`Path`] into the path of the parent
-    /// directory and the file name, then opens a file descriptor to the parent
-    /// directory.
+    /// descriptor relative to the give path file descriptor without resolving
+    /// trailing symlinks.
     ///
     /// # Errors
     ///
@@ -176,6 +205,22 @@ impl HostFile {
     /// Additionally, it errors if opening either the directory file descriptor
     /// or the file descriptor used to check the identity of the file fails.
     pub fn open_at_nofollow<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<{ linux::O_NOFOLLOW }, 0>(relative_to, path)
+    }
+
+    /// Creates a new [`HostFile`] from the given [`Path`], opening the file
+    /// descriptor relative to the given path file descriptor without resolving
+    /// symlinks.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the path provided did not refer to a file.
+    /// Additionally, it errors if opening either the directory file descriptor
+    /// or the file descriptor used to check the identity of the file fails.
+    pub fn open_at_no_symlinks<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
     ) -> Result<Self, Error> {
@@ -187,10 +232,6 @@ impl HostFile {
 
     /// Creates a new [`HostFile`] from the given [`Path`], opening the
     /// file descriptor beneath the given path file descriptor.
-    ///
-    /// This method breaks apart the [`Path`] into the path of the parent
-    /// directory and the file name, then opens a file descriptor to the parent
-    /// directory.
     ///
     /// # Errors
     ///
@@ -207,13 +248,9 @@ impl HostFile {
         )
     }
 
-    /// Creates a new [`HostFile`] from the given [`Path`], opening the
-    /// file descriptor beneath the given path file descriptor without resolving
-    /// symlinks.
-    ///
-    /// This method breaks apart the [`Path`] into the path of the parent
-    /// directory and the file name, then opens a file descriptor to the parent
-    /// directory.
+    /// Creates a new [`HostFile`] from the given [`Path`], opening the file
+    /// descriptor beneath the given path file descriptor without resolving
+    /// trailing symlinks.
     ///
     /// # Errors
     ///
@@ -221,6 +258,25 @@ impl HostFile {
     /// Additionally, it errors if opening either the directory file descriptor
     /// or the file descriptor used to check the identity of the file fails.
     pub fn open_at_beneath_nofollow<'fd>(
+        relative_to: impl Into<AtFd<'fd>>,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, Error> {
+        Self::open_at_internal::<
+            { linux::O_NOFOLLOW },
+            { linux::RESOLVE_BENEATH },
+        >(relative_to, path)
+    }
+
+    /// Creates a new [`HostFile`] from the given [`Path`], opening the
+    /// file descriptor beneath the given path file descriptor without resolving
+    /// symlinks.
+    ///
+    /// # Errors
+    ///
+    /// This method errors if the path provided did not refer to a file.
+    /// Additionally, it errors if opening either the directory file descriptor
+    /// or the file descriptor used to check the identity of the file fails.
+    pub fn open_at_beneath_no_symlinks<'fd>(
         relative_to: impl Into<AtFd<'fd>>,
         path: impl AsRef<Path>,
     ) -> Result<Self, Error> {
@@ -321,7 +377,14 @@ impl HostFile {
         .wrap_error::<PolicyError>()?;
 
         if !is_directory(fd.as_fd()).wrap_error::<PolicyError>()? {
-            Ok(Self { dirfd, name, fd })
+            Ok(Self {
+                dirfd,
+                name,
+                fd,
+                //NOTE: O_NOFOLLOW => we want to open the symlink, not its
+                //      destination (if it is one)
+                is_symlink: OPEN_FLAGS & linux::O_NOFOLLOW != 0,
+            })
         } else {
             Err(PolicyError::NotAFile.into())
         }
@@ -347,6 +410,7 @@ impl HostFile {
             dirfd: self.dirfd.as_fd(),
             name: self.name.as_c_str(),
             fd: self.fd.as_fd(),
+            is_symlink: self.is_symlink,
         }
     }
 }
@@ -364,12 +428,18 @@ pub struct HostFileRef<'fd> {
 
     /// File descriptor of the file itself.
     fd: BorrowedFd<'fd>,
+
+    /// Whether or not this is referencing a symlink at `dirfd/name` or the
+    /// file it points to.
+    is_symlink: bool,
 }
 
 impl<'fd> HostFileRef<'fd> {
     /// Convert this [`HostFileRef`] into its components.
-    pub fn into_parts(self) -> (BorrowedFd<'fd>, &'fd CStr, BorrowedFd<'fd>) {
-        (self.dirfd, self.name, self.fd)
+    pub fn into_parts(
+        self,
+    ) -> (BorrowedFd<'fd>, &'fd CStr, BorrowedFd<'fd>, bool) {
+        (self.dirfd, self.name, self.fd, self.is_symlink)
     }
 
     /// Checks if the given file descriptor represents the same file as this

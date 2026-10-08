@@ -4,6 +4,7 @@
 
 //TODO: add better options for linux-specific code to pull cgroups fds, write
 //      cstrings directly, etc GuestLinuxExt
+//FIXME: don't double-terminate and wait on `Drop`
 //FIXME: attempt to remove the lifetime parameter from the child so that the
 //       policy can be destroyed while the child is executing
 

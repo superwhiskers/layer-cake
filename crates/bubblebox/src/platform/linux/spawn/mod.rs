@@ -446,7 +446,7 @@ fn guest_post_clone<
             usize,
             OwnedFd,
             &'policy_ref Guest,
-            Option<(&'bind CStr, BorrowedFd<'bind>)>,
+            Option<(&'bind CStr, BorrowedFd<'bind>, bool)>,
             MountAttributes,
             bool,
         )>,

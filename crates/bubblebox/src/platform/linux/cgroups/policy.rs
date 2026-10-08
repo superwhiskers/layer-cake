@@ -12,6 +12,7 @@ use super::super::spawn::errors::{CgroupController, Host as HostError};
 
 //TODO: review all documentation comments here for consistency
 //TODO: make methods that take a `Resource` take an `impl Into<Resource<T>>`
+//TODO: properly install threaded cgroups
 
 /// Controllers available to a cgroup.
 #[derive(Clone, Debug, Default)]

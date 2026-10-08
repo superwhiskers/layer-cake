@@ -2,6 +2,8 @@
 
 //! Helpers for setting up mounts.
 
+//TODO: avoid capturing the host tree if we don't bind anything
+
 use core::{
     ffi::{self, CStr},
     iter::TrustedLen,
@@ -19,7 +21,7 @@ use super::{
     super::{
         mounts::{
             BindMount, File, Mount, MountAttributes, MountInner, Owner,
-            ProcHidepid, ProcPidNamespace, ProcSubset,
+            ProcHidepid, ProcPidNamespace, ProcSubset, TmpfsSize,
         },
         paths,
     },
@@ -237,23 +239,71 @@ where
             }
             MountInner::Tmpfs {
                 size,
+                max_inodes,
                 permissions,
                 attributes,
                 ..
             } => {
+                /// Sizes the buffer we use to format percentages.
+                ///
+                /// Sized as the upper bound on the number of digits in a u64 +
+                /// a byte for "%" and a null byte.
+                const fn size_percent_buffer() -> usize {
+                    fmt::unsigned_decimal_digits_upper_bound::<u64>()
+                        .saturating_add(2)
+                }
+
+                let mut buffer = itoa::Buffer::new();
                 let fs_fd = syscalls::fsopen(c"tmpfs", linux::FSOPEN_CLOEXEC)?;
 
-                if let Some(size) = size {
-                    size.as_str().with_c_str::<{
-                        //TODO: we won't need this anymore once we use a proper
-                        //      enum for the size or something like that, but
-                        //      for now, let's cap it at u32 literal size + 1
-                        //      character for the suffix, and another for the
-                        //      null byte.
-                        fmt::unsigned_decimal_digits_upper_bound::<u32>() + 2
+                match size {
+                    TmpfsSize::Unlimited => {
+                        syscalls::fsconfig_set_string(&fs_fd, c"size", c"0")?;
+                    }
+                    TmpfsSize::Bytes(bytes) => {
+                        buffer.format(*bytes).with_c_str::<{
+                            fmt::unsigned_decimal_digits_upper_bound::<u64>()
+                                .saturating_add(1)
+                        }, _, _, PostSpawnGuestError>(
+                            |bytes| {
+                                syscalls::fsconfig_set_string(
+                                    &fs_fd, c"size", bytes,
+                                )
+                            },
+                        )?;
+                    }
+                    TmpfsSize::Percent(percent) => {
+                        let mut buffer = [0u8; size_percent_buffer()];
+                        let mut offset = 0;
+
+                        fmt::write_integer(&mut buffer, &mut offset, *percent)?;
+                        fmt::write_bytes(&mut buffer, &mut offset, b"%\0")?;
+
+                        syscalls::fsconfig_set_string(
+                            &fs_fd,
+                            c"size",
+                            //SAFETY: we write the null terminator above and
+                            //        size the buffer appropriately
+                            unsafe {
+                                CStr::from_bytes_with_nul_unchecked(
+                                    buffer.as_slice(),
+                                )
+                            },
+                        )?;
+                    }
+                }
+
+                if let Some(max_inodes) = max_inodes {
+                    buffer.format(*max_inodes).with_c_str::<{
+                        fmt::unsigned_decimal_digits_upper_bound::<u64>()
+                            .saturating_add(1)
                     }, _, _, PostSpawnGuestError>(
-                        |size| {
-                            syscalls::fsconfig_set_string(&fs_fd, c"size", size)
+                        |max_inodes| {
+                            syscalls::fsconfig_set_string(
+                                &fs_fd,
+                                c"nr_inodes",
+                                max_inodes,
+                            )
                         },
                     )?;
                 }
@@ -343,8 +393,10 @@ pub fn resolve_bind_mappings<'a, 'b, I>(
         // destination of the mount
         &'a Guest,
         // file to construct the detached mount from and the fd to verify it,
-        // if this is a file bind mount
-        Option<(&'b CStr, BorrowedFd<'b>)>,
+        // if this is a file bind mount. last value is a boolean indicating if
+        // we want to open a symlink or resolve one. equivalent to
+        // `AT_SYMLINK_NOFOLLOW` when true
+        Option<(&'b CStr, BorrowedFd<'b>, bool)>,
         // mount attributes applied to the detached mount
         MountAttributes,
         // whether or not this is a recursive mount
@@ -395,8 +447,9 @@ where
                 name,
                 fd,
                 attributes,
+                is_symlink,
             }) => {
-                file_info = Some((name.as_c_str(), fd.as_fd()));
+                file_info = Some((name.as_c_str(), fd.as_fd(), *is_symlink));
 
                 //NOTE: file mounts cannot be recursive
                 (dirfd, *attributes, false)
@@ -473,13 +526,13 @@ where
             userns_fd: 0,
         };
 
-        let fd = if let Some((name, _)) = &file_info {
+        let fd = if let Some((name, _, is_symlink)) = &file_info {
             name.with_c_str::<{ PATH_COMPONENT_MAX }, _, _, PostSpawnGuestError>(
                 |name| {
                     syscalls::open_tree_attr(
                         Cwd,
                         name,
-                        open_tree_flags,
+                        open_tree_flags | if *is_symlink { linux::AT_SYMLINK_NOFOLLOW } else { 0 },
                         mount_attr,
                     )
                 },
@@ -488,7 +541,7 @@ where
             syscalls::open_tree_attr(Cwd, c"/", open_tree_flags, mount_attr)?
         };
 
-        if let Some((_, original_fd)) = file_info {
+        if let Some((_, original_fd, _)) = file_info {
             paths::same_file_identity(original_fd.as_fd(), fd.as_fd())?
                 .ok_or(PostSpawnGuestOtherError::BindMappedFileMismatch)?;
         }

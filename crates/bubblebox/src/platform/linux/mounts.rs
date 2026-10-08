@@ -49,7 +49,7 @@ impl Mount {
     /// ownership and permissions.
     #[must_use]
     pub fn read_only_file(fd: HostFile) -> Self {
-        let (dirfd, name, fd) = fd.into_parts();
+        let (dirfd, name, fd, is_symlink) = fd.into_parts();
         Self::new(MountInner::Bind(BindMount::File {
             dirfd,
             name,
@@ -61,6 +61,7 @@ impl Mount {
                 no_execution: false,
                 no_symlink_following: false,
             },
+            is_symlink,
         }))
     }
 
@@ -68,7 +69,7 @@ impl Mount {
     /// ownership and permissions.
     #[must_use]
     pub fn read_write_file(fd: HostFile) -> Self {
-        let (dirfd, name, fd) = fd.into_parts();
+        let (dirfd, name, fd, is_symlink) = fd.into_parts();
         Self::new(MountInner::Bind(BindMount::File {
             dirfd,
             name,
@@ -80,6 +81,7 @@ impl Mount {
                 no_execution: false,
                 no_symlink_following: false,
             },
+            is_symlink,
         }))
     }
 
@@ -87,7 +89,7 @@ impl Mount {
     /// preserving ownership and permissions.
     #[must_use]
     pub fn device_file(fd: HostFile) -> Self {
-        let (dirfd, name, fd) = fd.into_parts();
+        let (dirfd, name, fd, is_symlink) = fd.into_parts();
         Self::new(MountInner::Bind(BindMount::File {
             dirfd,
             name,
@@ -99,6 +101,7 @@ impl Mount {
                 no_execution: false,
                 no_symlink_following: false,
             },
+            is_symlink,
         }))
     }
 
@@ -106,12 +109,13 @@ impl Mount {
     /// permissions.
     #[must_use]
     pub fn bind_file(fd: HostFile, attributes: MountAttributes) -> Self {
-        let (dirfd, name, fd) = fd.into_parts();
+        let (dirfd, name, fd, is_symlink) = fd.into_parts();
         Self::new(MountInner::Bind(BindMount::File {
             dirfd,
             name,
             fd,
             attributes,
+            is_symlink,
         }))
     }
 
@@ -320,12 +324,13 @@ impl Mount {
     /// for the sandboxed process.
     #[must_use]
     pub const fn tmpfs(
-        //FIXME: just pass in a proper enum for the size
-        size: Option<String>,
+        size: TmpfsSize,
+        max_inodes: Option<u64>,
         permissions: Mode,
     ) -> Self {
         Self::new(MountInner::Tmpfs {
             size,
+            max_inodes,
             owner: Owner::User,
             permissions,
             attributes: MountAttributes {
@@ -394,7 +399,10 @@ pub(crate) enum MountInner {
     /// Tmpfs mount.
     Tmpfs {
         /// The size to bound the ephemeral directory by.
-        size: Option<String>,
+        size: TmpfsSize,
+
+        /// Maximum number of inodes for the tmpfs.
+        max_inodes: Option<u64>,
 
         /// Owner of the directory.
         owner: Owner,
@@ -445,6 +453,10 @@ pub(crate) enum BindMount {
 
         /// Attributes to bind-mount the path with.
         attributes: MountAttributes,
+
+        /// Whether or not we will bind mount a symlink should `dirfd/name`
+        /// refer to one, or instead mount the file it points to.
+        is_symlink: bool,
     },
 
     /// Bind mount of a directory.
@@ -560,6 +572,20 @@ impl MountAttributes {
 
         mount_attr
     }
+}
+
+/// `tmpfs(5)` `size` values.
+#[non_exhaustive]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash)]
+pub enum TmpfsSize {
+    /// No limit.
+    Unlimited,
+
+    /// Bytes.
+    Bytes(u64),
+
+    /// Percentage.
+    Percent(u64),
 }
 
 /// `proc(5)` `hidepid` options.
