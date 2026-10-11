@@ -4,7 +4,7 @@
 
 //TODO: remaining things for bwrap-parity:
 // - seccomp input
-// - overlay mounts (need implementation)
+// - overlay mounts
 // - maybe a minimal dev subset
 // - files materialized via fds
 // - selinux labels

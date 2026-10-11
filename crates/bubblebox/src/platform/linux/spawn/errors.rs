@@ -434,8 +434,8 @@ pub enum PostSpawnGuestOther {
     /// have been.
     NonzeroResolvedLen = 7,
 
-    /// A bind-mapped file did not have the expected file identity.
-    BindMappedFileMismatch = 8,
+    /// A file sourced from the host did not have the expected identity.
+    HostSourcedFileMismatch = 8,
 }
 
 impl fmt::Display for PostSpawnGuestOther {
@@ -451,7 +451,7 @@ impl fmt::Display for PostSpawnGuestOther {
             Self::DestinationExists => "a mount destination already existed",
             Self::MappingsLengthMismatch => "there was a mismatch between the number of mappings resolved and the length of the mappings vector",
             Self::NonzeroResolvedLen => "the length of the resolved mappings vector was not zero when it should have been",
-            Self::BindMappedFileMismatch => "a bind-mapped file did not have the expected file identity",
+            Self::HostSourcedFileMismatch => "a file sourced from the host did not have the expected identity",
         })
     }
 }
@@ -469,7 +469,7 @@ impl From<u8> for PostSpawnGuest {
             5 => Self::Other(PostSpawnGuestOther::DestinationExists),
             6 => Self::Other(PostSpawnGuestOther::MappingsLengthMismatch),
             7 => Self::Other(PostSpawnGuestOther::NonzeroResolvedLen),
-            8 => Self::Other(PostSpawnGuestOther::BindMappedFileMismatch),
+            8 => Self::Other(PostSpawnGuestOther::HostSourcedFileMismatch),
             _ => Self::InvalidWireFormat,
         }
     }

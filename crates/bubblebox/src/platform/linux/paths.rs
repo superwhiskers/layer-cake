@@ -335,6 +335,7 @@ impl HostFile {
                         linux::open_how {
                             flags: (linux::O_PATH
                                 | linux::O_CLOEXEC
+                                | linux::O_DIRECTORY
                                 | OPEN_FLAGS)
                                 as u64,
                             mode: 0,

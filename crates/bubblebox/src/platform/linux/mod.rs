@@ -10,7 +10,6 @@
 //!
 //! [`MOVE_MOUNT_BENEATH` to swap out the root filesystem]: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=ccfac16e0be52b674ac04fb5ba88c643f76ae0e1
 
-//TODO: implement overlayfs in the mount handling
 //TODO: determine how many of the values written to kernel setting filesystems
 //      actually need newlines at the end, if any, and clean up those that don't
 //TODO: permit privileged callers to bind mount whatever fds they have to

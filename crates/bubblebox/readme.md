@@ -11,6 +11,11 @@ and other crates that rely upon the standard library in the guest path.
 
 other features provided by bubblebox include:
 
+- fully unprivileged
+  - much harder than it looks!
+- all host references are backed by file descriptors
+  - overlayfs lowerdir/upperdir/workdir/datadir components
+  - bind mounts
 - optional cgroups v2 support
   - complete with automatic hierarchy acquisition from systemd
   - as well as support for a caller-provided cgroups hierarchy

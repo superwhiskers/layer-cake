@@ -4,6 +4,7 @@
 #![feature(const_cmp)]
 #![feature(const_trait_impl)]
 #![feature(const_default)]
+#![feature(const_convert)]
 #![feature(trusted_len)]
 #![feature(const_range)]
 #![feature(try_blocks)]

@@ -322,7 +322,7 @@ where
         mut self,
         configure: impl FnOnce(MountTree) -> MountTree,
     ) -> Result<Self, Error> {
-        let new_mounts = configure(self.mount_tree);
+        let mut new_mounts = configure(self.mount_tree);
         new_mounts
             .is_valid()
             .ok_or(PolicyError::InvalidMountPolicy)?;

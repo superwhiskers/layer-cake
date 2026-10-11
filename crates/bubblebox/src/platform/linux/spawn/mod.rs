@@ -22,7 +22,7 @@ use scopeguard::ScopeGuard;
 use super::{
     cgroups,
     errors::{Error, ResultSyscallExt},
-    mounts::{File, MountAttributes},
+    mounts::{File, MountAttributes, UpperDirs},
     policy::{
         Policy,
         namespace::{Namespace, UserMappingMode},
@@ -163,11 +163,21 @@ where
     let host_uid = syscalls::geteuid().wrap_error::<PreSpawnError>()?;
     let host_gid = syscalls::getegid().wrap_error::<PreSpawnError>()?;
 
-    // this needs to be allocated all the way up here because we can't
+    // these need to be allocated all the way up here because we can't
     // allocate once we `clone3(2)`.
-    let resolved_mappings = Vec::with_capacity(policy.mount_tree.0.len());
+
+    let resolved_mappings = Vec::with_capacity(policy.mount_tree.size());
+
+    //FIXME: this is oversized. we could use a similar technique to that used
+    //       to compute `host_mount_count`
     let namespace_fd_scratch_space =
-        Vec::with_capacity(policy.mount_tree.0.len());
+        Vec::with_capacity(policy.mount_tree.size());
+
+    let overlay_mount_scratch_space =
+        Vec::with_capacity(policy.mount_tree.host_mount_count);
+
+    //FIXME: this one too
+    let overlay_mounts = Vec::with_capacity(policy.mount_tree.size());
 
     let (host_pipe, guest_pipe) = syscalls::pipe2(linux::O_CLOEXEC as i32)
         .wrap_error::<PreSpawnError>()?;
@@ -262,6 +272,9 @@ where
     let resolved_mappings = ManuallyDrop::new(resolved_mappings);
     let namespace_fd_scratch_space =
         ManuallyDrop::new(namespace_fd_scratch_space);
+    let overlay_mount_scratch_space =
+        ManuallyDrop::new(overlay_mount_scratch_space);
+    let overlay_mounts = ManuallyDrop::new(overlay_mounts);
 
     //SAFETY: we're in the guest, we own this fd now
     let mut guest_pipe = unsafe { OwnedFd::from_raw_fd(guest_pipe) };
@@ -275,6 +288,8 @@ where
         cgroups_state,
         resolved_mappings,
         namespace_fd_scratch_space,
+        overlay_mount_scratch_space,
+        overlay_mounts,
         host_uid,
         host_gid,
     ) {
@@ -451,6 +466,17 @@ fn guest_post_clone<
             bool,
         )>,
     >,
+    mut overlay_mount_scratch_space: ManuallyDrop<Vec<OwnedFd>>,
+    mut overlay_mounts: ManuallyDrop<
+        Vec<(
+            usize,
+            &'policy_ref Guest,
+            &'policy_ref [OwnedFd],
+            &'policy_ref [OwnedFd],
+            &'policy_ref Option<UpperDirs>,
+            MountAttributes,
+        )>,
+    >,
     host_uid: Uid,
     host_gid: Gid,
 ) -> Result<SpawnAction<'str, Dirfd, Argv, Envp>, PostSpawnGuestError>
@@ -491,9 +517,11 @@ where
     //      over-allocate a vector made with `Vec::with_capacity`, so we
     //      cannot just blindly set it to its capacity
     let mut n_resolved = mounts::resolve_bind_mappings(
-        &policy.mount_tree.0,
+        &policy.mount_tree.tree,
         &mut resolved_mappings,
         &mut namespace_fd_scratch_space,
+        &mut overlay_mount_scratch_space,
+        &mut overlay_mounts,
     )?;
 
     let guest_proc_fs_fd = syscalls::fsopen(c"proc", linux::FSOPEN_CLOEXEC)?;
@@ -536,6 +564,12 @@ where
         true,
     )?;
 
+    n_resolved += mounts::finish_overlay_mount_resolution(
+        &mut resolved_mappings,
+        &mut overlay_mount_scratch_space,
+        &mut overlay_mounts,
+    )?;
+
     if let Namespace::Unshared(ref time) = policy.namespaces.time {
         //SAFETY: this doesn't affect any state in the guest that we
         //        care about
@@ -575,12 +609,12 @@ where
     )?;
 
     n_resolved += mounts::resolve_nonbind_mappings(
-        &policy.mount_tree.0,
+        &policy.mount_tree.tree,
         &mut resolved_mappings,
     )?;
 
     //NOTE: we need a better error here
-    (n_resolved == policy.mount_tree.0.len())
+    (n_resolved == policy.mount_tree.size())
         .ok_or(PostSpawnGuestOtherError::MappingsLengthMismatch)?;
 
     //SAFETY: we just checked the length matches the number of mappings

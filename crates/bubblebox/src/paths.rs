@@ -68,3 +68,15 @@ impl TryFrom<&str> for Guest {
         Self::new(PathBuf::from(path))
     }
 }
+
+/// Finds the nearest common ancestor of the two paths.
+pub(crate) fn nearest_ancestor(
+    ax: impl AsRef<Path>,
+    bx: impl AsRef<Path>,
+) -> PathBuf {
+    ax.as_ref()
+        .components()
+        .zip(bx.as_ref().components())
+        .map_while(|(a, b)| (a == b).then_some(a))
+        .collect()
+}

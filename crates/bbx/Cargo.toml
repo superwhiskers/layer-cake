@@ -15,7 +15,7 @@ lexopt.workspace = true
 bubblebox.workspace = true
 
 [dependencies.zip]
-version = "8"
+version = "9"
 default-features = false
 features = ["deflate"]
 
