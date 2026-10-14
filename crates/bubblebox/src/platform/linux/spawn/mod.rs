@@ -249,7 +249,8 @@ where
 
         //SAFETY: we want it to leak into the guest but we also need to
         //        read from it and rely upon its closure in the guest
-        unsafe { syscalls::close(guest_pipe) };
+        unsafe { syscalls::close(guest_pipe) }
+            .wrap_error::<PostSpawnHostError>()?;
 
         host_post_clone(&policy, &mut *cgroups_state, guest_pid, host_pipe)?;
         return Ok((

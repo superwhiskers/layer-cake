@@ -52,7 +52,20 @@ impl Mount {
     /// Indicates if the source is synthetic or not.
     pub const fn is_synthetic(&self) -> bool {
         let Self { inner } = self;
-        !matches!(inner, MountInner::Bind(_))
+
+        //NOTE: exclude overlay mounts which allow writing to the host. we
+        //      should probably stop calling these "synthetic"/"non-synthetic"
+        //      as that's not the right distinction
+        !matches!(
+            inner,
+            MountInner::Bind(_)
+                | MountInner::Overlay {
+                    upperdirs: Some(UpperDirs {
+                        inner: UpperDirsInner::Fd { .. }
+                    }),
+                    ..
+                }
+        )
     }
 
     /// Read-only mapping of a file from the host to the guest, preserving

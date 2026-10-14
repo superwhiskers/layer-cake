@@ -553,17 +553,20 @@ pub fn read_uninit(
 /// descriptor is 1) open and 2) not expected to be open after calling
 /// `close(2)`.
 #[inline]
-pub unsafe fn close(fd: impl IntoRawFd) {
+pub unsafe fn close(fd: impl IntoRawFd) -> Result<(), SyscallError> {
     //NOTE: i debated whether or not to take [`IntoRawFd`] as it does not
     //      strictly require ownership transfer, but the only
     //      alternative---taking [`RawFd`]---does not either. this is marginally
     //      more ergonomic anyway
 
-    //NOTE: we intentionally ignore the error because the potential errors are
-    //      more hazardous to handle than they are to ignore
     //SAFETY: the caller asserts this file descriptor is not expected to be
     //         open after this call
-    let _ = unsafe { syscall1(abi::CLOSE, Arg::from_int(fd.into_raw_fd())) };
+    let _ = unsafe {
+        syscall1(abi::CLOSE, Arg::from_int(fd.into_raw_fd()))
+            .wrap_syscall(Syscall::Close)?
+    };
+
+    Ok(())
 }
 
 /// `eventfd2(2)`.

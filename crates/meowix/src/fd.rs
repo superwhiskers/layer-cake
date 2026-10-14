@@ -156,9 +156,7 @@ impl Drop for OwnedFd {
     #[inline]
     fn drop(&mut self) {
         //SAFETY: it must be open, hence this is fine
-        unsafe {
-            crate::syscalls::close(self.fd.as_inner());
-        }
+        let _ = unsafe { crate::syscalls::close(self.fd.as_inner()) };
     }
 }
 

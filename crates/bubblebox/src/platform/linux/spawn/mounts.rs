@@ -98,14 +98,15 @@ pub fn apply_tmpfs_size(
             fmt::write_integer(&mut buffer, &mut offset, percent)?;
             fmt::write_bytes(&mut buffer, &mut offset, b"%\0")?;
 
+            //SAFETY: the two `write_*` calls above fails if they overflow the
+            //        buffer
+            let size = unsafe { buffer.get_unchecked(..offset) };
             syscalls::fsconfig_set_string(
                 &fs_fd,
                 c"size",
                 //SAFETY: we write the null terminator above and size the
                 //        buffer appropriately
-                unsafe {
-                    CStr::from_bytes_with_nul_unchecked(buffer.as_slice())
-                },
+                unsafe { CStr::from_bytes_with_nul_unchecked(size) },
             )?;
         }
     }

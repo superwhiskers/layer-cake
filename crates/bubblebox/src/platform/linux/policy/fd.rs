@@ -47,13 +47,17 @@ pub(in super::super) fn is_valid_fd_policy(
         .collect::<HashSet<_>>();
 
     for (fd, action) in policy_map {
+        if *fd < 0 {
+            return false;
+        }
+
         if matches!(action, Action::Ignore) {
             //NOTE: if a source is ignored, there there isn't any ordering
             //      constraint required to perform the map
             continue;
         }
 
-        if sources.contains(fd) || *fd < 0 {
+        if sources.contains(fd) {
             return false;
         }
     }

@@ -313,6 +313,9 @@ pub enum Syscall {
     /// `sched_setattr(2)`.
     SchedSetattr = 49,
 
+    /// `close(2)`.
+    Close = 50,
+
     /// Syscall variant was not recognized.
     Unknown = u8::MAX,
 }
@@ -370,6 +373,7 @@ impl fmt::Display for Syscall {
             Self::Keyctl => "keyctl(2)",
             Self::Prlimit64 => "prlimit64(2)",
             Self::SchedSetattr => "sched_setattr(2)",
+            Self::Close => "close(2)",
             Self::Unknown => "unknown syscall",
         })
     }
@@ -428,6 +432,7 @@ impl From<u8> for Syscall {
             47 => Syscall::Keyctl,
             48 => Syscall::Prlimit64,
             49 => Syscall::SchedSetattr,
+            50 => Syscall::Close,
             _ => Syscall::Unknown,
         }
     }
