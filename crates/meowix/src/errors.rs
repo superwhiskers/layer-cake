@@ -316,6 +316,33 @@ pub enum Syscall {
     /// `close(2)`.
     Close = 50,
 
+    /// `getdents64(2)`.
+    Getdents64 = 51,
+
+    /// `lseek(2)`.
+    ///
+    /// Due to the generic implementation, this may also be `_llseek(2)` or
+    /// `llseek(2)`, but for a given target, only one of these.
+    Lseek = 52,
+
+    /// `writev(2)`.
+    Writev = 53,
+
+    /// `flock(2)`.
+    Flock = 54,
+
+    /// `readv(2)`.
+    Readv = 55,
+
+    /// `linkat(2)`.
+    Linkat = 56,
+
+    /// `fsetxattr(2)`.
+    Fsetxattr = 57,
+
+    /// `fchmod(2)`.
+    Fchmod = 58,
+
     /// Syscall variant was not recognized.
     Unknown = u8::MAX,
 }
@@ -354,14 +381,28 @@ impl fmt::Display for Syscall {
             Self::Setns => "setns(2)",
             Self::RtSigaction => "rt_sigaction(2)",
             Self::RtSigprocmask => "rt_sigprocmask(2)",
+
+            #[cfg(target_pointer_width = "64")]
             Self::Ppoll => "ppoll(2)",
+            #[cfg(target_pointer_width = "32")]
+            Self::Ppoll => "ppoll_time64(2)",
+
             Self::Recvmsg => "recvmsg(2)",
             Self::Sendto => "sendto(2)",
             Self::Socket => "socket(2)",
             Self::Ioctl => "ioctl(2)",
             Self::PidfdOpen => "pidfd_open(2)",
+
+            #[cfg(target_pointer_width = "64")]
             Self::Getegid => "getegid(2)",
+            #[cfg(target_pointer_width = "32")]
+            Self::Getegid => "getegid32(2)",
+
+            #[cfg(target_pointer_width = "64")]
             Self::Geteuid => "geteuid(2)",
+            #[cfg(target_pointer_width = "32")]
+            Self::Geteuid => "geteuid32(2)",
+
             Self::Gettid => "gettid(2)",
             Self::PidfdSendSignal => "pidfd_send_signal(2)",
             Self::Umask => "umask(2)",
@@ -374,6 +415,44 @@ impl fmt::Display for Syscall {
             Self::Prlimit64 => "prlimit64(2)",
             Self::SchedSetattr => "sched_setattr(2)",
             Self::Close => "close(2)",
+            Self::Getdents64 => "getdents64(2)",
+
+            //NOTE: we condition these upon the implementation syscall so the
+            //      error messages are more precise
+            #[cfg(target_pointer_width = "64")]
+            Self::Lseek => "lseek(2)",
+            #[cfg(all(
+                target_pointer_width = "32",
+                any(
+                    target_arch = "x86",
+                    target_arch = "arm",
+                    target_arch = "mips",
+                    target_arch = "mips32r6",
+                    target_arch = "powerpc",
+                    target_arch = "sparc",
+                )
+            ))]
+            Self::Lseek => "llseek(2)",
+            #[cfg(all(
+                target_pointer_width = "32",
+                not(any(
+                    target_arch = "x86",
+                    target_arch = "arm",
+                    target_arch = "mips",
+                    target_arch = "mips32r6",
+                    target_arch = "powerpc",
+                    target_arch = "sparc",
+                ))
+            ))]
+            Self::Lseek => "_llseek(2)",
+
+            Self::Writev => "writev(2)",
+            Self::Flock => "flock(2)",
+            Self::Readv => "readv(2)",
+            Self::Linkat => "linkat(2)",
+            Self::Fsetxattr => "fsetxattr(2)",
+            Self::Fchmod => "fchmod(2)",
+
             Self::Unknown => "unknown syscall",
         })
     }
@@ -433,6 +512,14 @@ impl From<u8> for Syscall {
             48 => Syscall::Prlimit64,
             49 => Syscall::SchedSetattr,
             50 => Syscall::Close,
+            51 => Syscall::Getdents64,
+            52 => Syscall::Lseek,
+            53 => Syscall::Writev,
+            54 => Syscall::Flock,
+            55 => Syscall::Readv,
+            56 => Syscall::Linkat,
+            57 => Syscall::Fsetxattr,
+            58 => Syscall::Fchmod,
             _ => Syscall::Unknown,
         }
     }

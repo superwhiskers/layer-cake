@@ -37,7 +37,7 @@ impl Cgroups<SystemdCgroups> {
 }
 
 /// Owned cgroups hierarchy created using a systemd transient unit.
-#[derive(Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct SystemdCgroups;
 
 /// State for the systemd backend.

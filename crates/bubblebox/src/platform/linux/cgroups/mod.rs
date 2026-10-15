@@ -14,17 +14,12 @@
 //!
 //! [systemd]: https://systemd.io
 
-//TODO: look into talking to elogind to acquire a cgroups instance, if this
-//      would work at all
 //TODO: system scoped cgroups on systemd? this could be useful but also
 //      requires privileges. may allow us access to more controllers
 //TODO: consider making the backend a trait object. the primary difficulty here
 //      is dealing with the state
 //TODO: consider using a name other than `bubblebox-child` for the cgroup. i.e.
 //      use uuid like we do in the systemd backend for the wrapper cgroup
-
-//TODO: temporary
-#![allow(missing_copy_implementations)]
 
 use meowix::{fd::BorrowedFd, ids::Pid};
 

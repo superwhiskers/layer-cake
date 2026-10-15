@@ -11,18 +11,57 @@ use linux_raw_sys::general as linux;
 #[cfg(feature = "alloc")]
 use alloc::{string::String, vec::Vec};
 
+#[cfg(feature = "std")]
+use std::{
+    io::{self, IoSlice, IoSliceMut},
+    slice,
+};
+
 use crate::{
     errno::Errno,
     errors::{
         CStrBufferTooSmall, IncompleteWrite,
-        PartialTransfer as PartialTransferError,
+        PartialTransfer as PartialTransferError, SyscallError,
     },
     fd::{AsFd, BorrowedFd, OwnedFd},
     syscalls,
 };
 
 #[cfg(feature = "alloc")]
-use crate::errors::{StringRead as StringReadError, SyscallError};
+use crate::errors::StringRead as StringReadError;
+
+//NOTE: the following three functions probably belong inside a layer-cake-util
+//      or something like that
+
+/// Compute the number of decimal digits in a [`u128`] value.
+pub const fn compute_decimal_digits_u128(mut n: u128) -> usize {
+    let mut digits = 1usize;
+
+    while n >= 10 {
+        n /= 10;
+        digits = digits.saturating_add(1);
+    }
+
+    digits
+}
+
+/// Compute the upper bound on the number of decimal digits for the given
+/// unsigned integer type.
+pub const fn unsigned_decimal_digits_upper_bound<T>() -> usize {
+    compute_decimal_digits_u128(
+        u128::MAX
+            >> (128usize.saturating_sub(size_of::<T>().saturating_mul(8))),
+    )
+}
+
+/// Compute the upper bound on the number of decimal digits and possible sign
+/// for the given signed integer type.
+pub const fn signed_decimal_digits_upper_bound<T>() -> usize {
+    compute_decimal_digits_u128(
+        1 << (size_of::<T>().saturating_mul(8).saturating_sub(1)),
+    )
+    .saturating_add(1)
+}
 
 /// Typical [`WithCStr`] buffer length for single path components.
 ///
@@ -102,6 +141,109 @@ impl<'fd> From<Cwd> for AtFd<'fd> {
         Self {
             inner: AtFdInner::Cwd,
         }
+    }
+}
+
+/// Wrapper for a file descriptor implementing [`io::Read`] and [`io::Write`].
+#[cfg(feature = "std")]
+#[repr(transparent)]
+#[derive(Hash, Debug, Copy, Clone, Eq, PartialEq)]
+pub struct FdReadWrite<T> {
+    /// File descriptor.
+    inner: T,
+}
+
+#[cfg(feature = "std")]
+impl<T> FdReadWrite<T> {
+    /// Construct a new wrapper for the given file descriptor.
+    pub fn new(inner: T) -> Self {
+        Self { inner }
+    }
+
+    /// Extract the file descriptor from the wrapper.
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
+}
+
+#[cfg(feature = "std")]
+impl<T> io::Read for FdReadWrite<T>
+where
+    T: AsFd,
+{
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        syscalls::read(&self.inner, buf)
+            .map_err(|e| io::Error::from_raw_os_error(e.error().raw_os_error()))
+    }
+
+    fn read_vectored(
+        &mut self,
+        bufs: &mut [IoSliceMut<'_>],
+    ) -> Result<usize, io::Error> {
+        //SAFETY: std guaranteed `IoSliceMut` is abi-compatible with
+        //        `linux::iovec`
+        let raw_contents =
+            unsafe { &mut *(bufs.as_mut_ptr() as *mut linux::iovec) };
+
+        //SAFETY: because the pointers are equivalent, this is still a valid
+        //        slice
+        let mut iovec_slice =
+            unsafe { slice::from_raw_parts_mut(raw_contents, bufs.len()) };
+
+        syscalls::readv(&self.inner, &mut iovec_slice)
+            .map_err(|e| io::Error::from_raw_os_error(e.error().raw_os_error()))
+    }
+
+    fn is_read_vectored(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "std")]
+impl<T> io::Write for FdReadWrite<T>
+where
+    T: AsFd,
+{
+    fn write(&mut self, buf: &[u8]) -> Result<usize, io::Error> {
+        syscalls::write(&self.inner, buf)
+            .map_err(|e| io::Error::from_raw_os_error(e.error().raw_os_error()))
+    }
+
+    fn flush(&mut self) -> Result<(), io::Error> {
+        //NOTE: this is what the rust std does. see:
+        //      https://doc.rust-lang.org/stable/std/fs/struct.File.html#method.flush
+        Ok(())
+    }
+
+    fn write_vectored(
+        &mut self,
+        bufs: &[IoSlice<'_>],
+    ) -> Result<usize, io::Error> {
+        //SAFETY: std guarantees `IoSlice` is abi-compatible with
+        //        `linux::iovec`
+        let raw_contents = unsafe { &*(bufs.as_ptr() as *const linux::iovec) };
+
+        //SAFETY: because the pointers are equivalent, this is still a valid
+        //        slice
+        let iovec_slice =
+            unsafe { slice::from_raw_parts(raw_contents, bufs.len()) };
+
+        syscalls::writev(&self.inner, iovec_slice)
+            .map_err(|e| io::Error::from_raw_os_error(e.error().raw_os_error()))
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "std")]
+impl<T> AsFd for FdReadWrite<T>
+where
+    T: AsFd,
+{
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.inner.as_fd()
     }
 }
 
@@ -309,6 +451,28 @@ pub trait FdReadWriteExt: AsFd {
 }
 
 impl<T> FdReadWriteExt for T where T: AsFd {}
+
+/// Checks if a path represents a directory.
+///
+/// # Errors
+///
+/// This function errors if calling `statx(2)` on the given file descriptor
+/// fails.
+//TODO: does this belong here or in another module?
+pub fn is_directory<'fd>(
+    fd: impl Into<AtFd<'fd>>,
+) -> Result<bool, SyscallError> {
+    let filetype = syscalls::statx(
+        fd,
+        c"",
+        (linux::AT_EMPTY_PATH | linux::AT_SYMLINK_NOFOLLOW) as i32,
+        linux::STATX_TYPE,
+    )?
+    .stx_mode as u32
+        & linux::S_IFMT;
+
+    Ok(filetype == linux::S_IFDIR)
+}
 
 /// Representation of string types that may become a [`CStr`].
 //TODO: could be useful to adapt plain integer types for convenience, would

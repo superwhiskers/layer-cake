@@ -14,7 +14,7 @@ use meowix::{
     errors::{CStrBufferTooSmall, SyscallError, WithCStrError},
     fd::{AsFd, BorrowedFd, OwnedFd},
     retry_on_interrupt, syscalls,
-    util::{AtFd, Cwd, PATH_COMPONENT_MAX, PATH_MAX, WithCStr},
+    util::{AtFd, Cwd, PATH_COMPONENT_MAX, PATH_MAX, WithCStr, is_directory},
 };
 use std::{
     cmp::Ordering,
@@ -30,25 +30,6 @@ use super::{
     policy::errors::Policy as PolicyError,
 };
 use crate::errors::GuestPath as GuestPathError;
-
-/// Checks if a path represents a directory.
-///
-/// # Errors
-///
-/// This function errors if calling `statx(2)` on the given file descriptor
-/// fails.
-fn is_directory<'fd>(fd: impl Into<AtFd<'fd>>) -> Result<bool, SyscallError> {
-    let filetype = syscalls::statx(
-        fd,
-        c"",
-        (linux::AT_EMPTY_PATH | linux::AT_SYMLINK_NOFOLLOW) as i32,
-        linux::STATX_TYPE,
-    )?
-    .stx_mode as u32
-        & linux::S_IFMT;
-
-    Ok(filetype == linux::S_IFDIR)
-}
 
 /// Checks if one file descriptor shares the same file identity as another.
 ///

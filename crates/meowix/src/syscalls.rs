@@ -69,7 +69,7 @@ pub enum CloneResult {
 #[inline]
 pub fn mount_setattr<'a>(
     dirfd: impl Into<AtFd<'a>>,
-    path: &CStr,
+    path: impl AsRef<CStr>,
     flags: ffi::c_uint,
     attr: impl Borrow<linux::mount_attr>,
 ) -> Result<(), SyscallError> {
@@ -80,7 +80,7 @@ pub fn mount_setattr<'a>(
         syscall5(
             abi::MOUNT_SETATTR,
             Arg::from_at_fd(&dirfd.into()),
-            Arg::from_c_str(path),
+            Arg::from_c_str(path.as_ref()),
             Arg::from_uint(flags),
             Arg::from_ptr(attr.borrow()),
             Arg::from_usize(size_of::<linux::mount_attr>()),
@@ -123,7 +123,7 @@ pub unsafe fn dup3(
 #[inline]
 pub fn open_tree_attr<'a>(
     dirfd: impl Into<AtFd<'a>>,
-    path: &CStr,
+    path: impl AsRef<CStr>,
     flags: ffi::c_uint,
     attr: impl Borrow<linux::mount_attr>,
 ) -> Result<OwnedFd, SyscallError> {
@@ -133,7 +133,7 @@ pub fn open_tree_attr<'a>(
         syscall5(
             abi::OPEN_TREE_ATTR,
             Arg::from_at_fd(&dirfd.into()),
-            Arg::from_c_str(path),
+            Arg::from_c_str(path.as_ref()),
             Arg::from_uint(flags),
             Arg::from_ptr(attr.borrow()),
             Arg::from_usize(size_of::<linux::mount_attr>()),
@@ -150,7 +150,7 @@ pub fn open_tree_attr<'a>(
 #[inline]
 pub fn open_tree<'a>(
     dirfd: impl Into<AtFd<'a>>,
-    path: &CStr,
+    path: impl AsRef<CStr>,
     flags: ffi::c_uint,
 ) -> Result<OwnedFd, SyscallError> {
     //SAFETY: invariants on types passed to the function ensure that 1) `dirfd`
@@ -159,7 +159,7 @@ pub fn open_tree<'a>(
         syscall3(
             abi::OPEN_TREE,
             Arg::from_at_fd(&dirfd.into()),
-            Arg::from_c_str(path),
+            Arg::from_c_str(path.as_ref()),
             Arg::from_uint(flags),
         )
         .wrap_syscall(Syscall::OpenTree)?
@@ -201,7 +201,7 @@ pub fn pipe2(flags: ffi::c_int) -> Result<(OwnedFd, OwnedFd), SyscallError> {
 #[inline]
 pub fn openat2<'a>(
     dirfd: impl Into<AtFd<'a>>,
-    path: &CStr,
+    path: impl AsRef<CStr>,
     how: impl Borrow<linux::open_how>,
 ) -> Result<OwnedFd, SyscallError> {
     //SAFETY: invariants on the provided arguments ensure this call is valid
@@ -209,7 +209,7 @@ pub fn openat2<'a>(
         syscall4(
             abi::OPENAT2,
             Arg::from_at_fd(&dirfd.into()),
-            Arg::from_c_str(path),
+            Arg::from_c_str(path.as_ref()),
             Arg::from_ptr(how.borrow()),
             Arg::from_usize(size_of::<linux::open_how>()),
         )
@@ -224,7 +224,7 @@ pub fn openat2<'a>(
 #[inline]
 pub fn mkdirat<'a>(
     dirfd: impl Into<AtFd<'a>>,
-    path: &CStr,
+    path: impl AsRef<CStr>,
     mode: ffi::c_uint,
 ) -> Result<(), SyscallError> {
     //SAFETY: invariants on the provided arguments ensure this call is valid
@@ -232,7 +232,7 @@ pub fn mkdirat<'a>(
         syscall3(
             abi::MKDIRAT,
             Arg::from_at_fd(&dirfd.into()),
-            Arg::from_c_str(path),
+            Arg::from_c_str(path.as_ref()),
             Arg::from_uint(mode),
         )
         .wrap_syscall(Syscall::Mkdirat)?
@@ -257,7 +257,7 @@ pub fn umask(mode: ffi::c_uint) -> Result<ffi::c_uint, SyscallError> {
 #[inline]
 pub fn statx<'a>(
     dirfd: impl Into<AtFd<'a>>,
-    path: &CStr,
+    path: impl AsRef<CStr>,
     flags: ffi::c_int,
     mask: ffi::c_uint,
 ) -> Result<linux::statx, SyscallError> {
@@ -270,7 +270,7 @@ pub fn statx<'a>(
         syscall5(
             abi::STATX,
             Arg::from_at_fd(&dirfd.into()),
-            Arg::from_c_str(path),
+            Arg::from_c_str(path.as_ref()),
             Arg::from_int(flags),
             Arg::from_uint(mask),
             Arg::from_mut_ptr(&mut statx),
@@ -284,14 +284,18 @@ pub fn statx<'a>(
 /// `fsopen(2)`.
 #[inline]
 pub fn fsopen(
-    fsname: &CStr,
+    fsname: impl AsRef<CStr>,
     flags: ffi::c_uint,
 ) -> Result<OwnedFd, SyscallError> {
     //SAFETY: invariants on `fsname` ensure it's a valid c string, invalid
     //        flags will not affect memory safety
     let raw_fd = unsafe {
-        syscall2(abi::FSOPEN, Arg::from_c_str(fsname), Arg::from_uint(flags))
-            .wrap_syscall(Syscall::Fsopen)?
+        syscall2(
+            abi::FSOPEN,
+            Arg::from_c_str(fsname.as_ref()),
+            Arg::from_uint(flags),
+        )
+        .wrap_syscall(Syscall::Fsopen)?
     };
 
     //SAFETY: on success, the fd is initialized
@@ -302,7 +306,7 @@ pub fn fsopen(
 #[inline]
 pub fn fsconfig_set_flag(
     fd: impl AsFd,
-    key: &CStr,
+    key: impl AsRef<CStr>,
 ) -> Result<(), SyscallError> {
     //SAFETY: invariants on the types provided ensure this is a valid syscall
     let _ = unsafe {
@@ -310,7 +314,7 @@ pub fn fsconfig_set_flag(
             abi::FSCONFIG,
             Arg::from_fd(fd.as_fd()),
             Arg::from_uint(fsconfig::FSCONFIG_SET_FLAG as ffi::c_uint),
-            Arg::from_c_str(key),
+            Arg::from_c_str(key.as_ref()),
             Arg::from_ptr(ptr::null::<ffi::c_void>()),
             Arg::from_int(0),
         )
@@ -324,8 +328,8 @@ pub fn fsconfig_set_flag(
 #[inline]
 pub fn fsconfig_set_string(
     fd: impl AsFd,
-    key: &CStr,
-    value: &CStr,
+    key: impl AsRef<CStr>,
+    value: impl AsRef<CStr>,
 ) -> Result<(), SyscallError> {
     //SAFETY: invariants on the types provided ensure this is a valid syscall
     let _ = unsafe {
@@ -333,8 +337,8 @@ pub fn fsconfig_set_string(
             abi::FSCONFIG,
             Arg::from_fd(fd.as_fd()),
             Arg::from_uint(fsconfig::FSCONFIG_SET_STRING as ffi::c_uint),
-            Arg::from_c_str(key),
-            Arg::from_c_str(value),
+            Arg::from_c_str(key.as_ref()),
+            Arg::from_c_str(value.as_ref()),
             Arg::from_int(0),
         )
         .wrap_syscall(Syscall::Fsconfig)?
@@ -347,7 +351,7 @@ pub fn fsconfig_set_string(
 #[inline]
 pub fn fsconfig_set_fd(
     fd: impl AsFd,
-    key: &CStr,
+    key: impl AsRef<CStr>,
     aux: impl AsFd,
 ) -> Result<(), SyscallError> {
     //SAFETY: invariants on the provided types ensure this is a valid syscall
@@ -356,7 +360,7 @@ pub fn fsconfig_set_fd(
             abi::FSCONFIG,
             Arg::from_fd(fd.as_fd()),
             Arg::from_uint(fsconfig::FSCONFIG_SET_FD as ffi::c_uint),
-            Arg::from_c_str(key),
+            Arg::from_c_str(key.as_ref()),
             Arg::from_ptr(ptr::null::<ffi::c_void>()),
             Arg::from_fd(aux.as_fd()),
         )
@@ -436,9 +440,9 @@ pub fn fsmount(
 #[inline]
 pub fn move_mount<'from, 'to>(
     from_dirfd: impl Into<AtFd<'from>>,
-    from_path: &CStr,
+    from_path: impl AsRef<CStr>,
     to_dirfd: impl Into<AtFd<'to>>,
-    to_path: &CStr,
+    to_path: impl AsRef<CStr>,
     flags: ffi::c_uint,
 ) -> Result<(), SyscallError> {
     //SAFETY: invariants on the provided types ensure this is a valid syscall
@@ -446,9 +450,9 @@ pub fn move_mount<'from, 'to>(
         syscall5(
             abi::MOVE_MOUNT,
             Arg::from_at_fd(&from_dirfd.into()),
-            Arg::from_c_str(from_path),
+            Arg::from_c_str(from_path.as_ref()),
             Arg::from_at_fd(&to_dirfd.into()),
-            Arg::from_c_str(to_path),
+            Arg::from_c_str(to_path.as_ref()),
             Arg::from_uint(flags),
         )
         .wrap_syscall(Syscall::MoveMount)?
@@ -460,7 +464,7 @@ pub fn move_mount<'from, 'to>(
 /// `mount(2)`, specialized to change the propagation flags.
 #[inline]
 pub fn update_mount_propagation_flags(
-    target: &CStr,
+    target: impl AsRef<CStr>,
     mountflags: ffi::c_ulong,
 ) -> Result<(), SyscallError> {
     //SAFETY: invariants on the provided types ensure this is a valid syscall
@@ -468,7 +472,7 @@ pub fn update_mount_propagation_flags(
         syscall5(
             abi::MOUNT,
             Arg::from_ptr(ptr::null::<ffi::c_char>()),
-            Arg::from_c_str(target),
+            Arg::from_c_str(target.as_ref()),
             Arg::from_ptr(ptr::null::<ffi::c_char>()),
             Arg::from_ulong(mountflags),
             Arg::from_ptr(ptr::null::<ffi::c_void>()),
@@ -481,11 +485,18 @@ pub fn update_mount_propagation_flags(
 
 /// `umount2(2)`.
 #[inline]
-pub fn umount2(target: &CStr, flags: ffi::c_int) -> Result<(), SyscallError> {
+pub fn umount2(
+    target: impl AsRef<CStr>,
+    flags: ffi::c_int,
+) -> Result<(), SyscallError> {
     //SAFETY: invariants on the provided types ensure this is a valid syscall
     let _ = unsafe {
-        syscall2(abi::UMOUNT2, Arg::from_c_str(target), Arg::from_int(flags))
-            .wrap_syscall(Syscall::Umount2)?
+        syscall2(
+            abi::UMOUNT2,
+            Arg::from_c_str(target.as_ref()),
+            Arg::from_int(flags),
+        )
+        .wrap_syscall(Syscall::Umount2)?
     };
 
     Ok(())
@@ -825,10 +836,10 @@ pub unsafe fn unshare(flags: ffi::c_int) -> Result<(), SyscallError> {
 
 /// `chdir(2)`.
 #[inline]
-pub fn chdir(path: &CStr) -> Result<(), SyscallError> {
+pub fn chdir(path: impl AsRef<CStr>) -> Result<(), SyscallError> {
     //SAFETY: the type of the argument ensures this call is safe
     let _ = unsafe {
-        syscall1(abi::CHDIR, Arg::from_c_str(path))
+        syscall1(abi::CHDIR, Arg::from_c_str(path.as_ref()))
             .wrap_syscall(Syscall::Chdir)?
     };
 
@@ -849,10 +860,10 @@ pub fn fchdir(fd: impl AsFd) -> Result<(), SyscallError> {
 
 /// `chroot(2)`.
 #[inline]
-pub fn chroot(path: &CStr) -> Result<(), SyscallError> {
+pub fn chroot(path: impl AsRef<CStr>) -> Result<(), SyscallError> {
     //SAFETY: the type of the argument ensures this call is safe
     let _ = unsafe {
-        syscall1(abi::CHROOT, Arg::from_c_str(path))
+        syscall1(abi::CHROOT, Arg::from_c_str(path.as_ref()))
             .wrap_syscall(Syscall::Chroot)?
     };
 
@@ -1080,12 +1091,12 @@ pub fn waitid(
 #[inline]
 pub fn interface_name_to_index(
     fd: impl AsFd,
-    ifr_name: &CStr,
+    ifr_name: impl AsRef<CStr>,
 ) -> Result<ffi::c_uint, SyscallError> {
     //SAFETY: this is a c structure which is valid when zeroed
     let mut ifreq = unsafe { mem::zeroed::<linux_net::ifreq>() };
 
-    let ifname = ifr_name.to_bytes_with_nul();
+    let ifname = ifr_name.as_ref().to_bytes_with_nul();
     if let Some(target_ifname) =
         //SAFETY: we zero-initialized this structure so this is fine
         unsafe { &mut ifreq.ifr_ifrn.ifrn_name }.get_mut(..ifname.len())
@@ -1266,7 +1277,7 @@ pub unsafe fn close_range(
 #[inline]
 pub unsafe fn execveat<'a>(
     dirfd: impl Into<AtFd<'a>>,
-    path: &CStr,
+    path: impl AsRef<CStr>,
     argv: impl AsRef<[*const ffi::c_char]>,
     envp: impl AsRef<[*const ffi::c_char]>,
     flags: ffi::c_int,
@@ -1276,7 +1287,7 @@ pub unsafe fn execveat<'a>(
         syscall5(
             abi::EXECVEAT,
             Arg::from_at_fd(&dirfd.into()),
-            Arg::from_c_str(path),
+            Arg::from_c_str(path.as_ref()),
             Arg::from_ptr(argv.as_ref().as_ptr()),
             Arg::from_ptr(envp.as_ref().as_ptr()),
             Arg::from_int(flags),
@@ -1372,9 +1383,9 @@ pub fn pidfd_get_info(
 /// `symlinkat(2)`.
 #[inline]
 pub fn symlinkat<'a>(
-    target: &CStr,
+    target: impl AsRef<CStr>,
     newdirfd: impl Into<AtFd<'a>>,
-    linkpath: &CStr,
+    linkpath: impl AsRef<CStr>,
 ) -> Result<(), SyscallError> {
     //SAFETY: incorrect flags have no bearing on the safety of this call.
     //        invariants upon the argument types (fd validity, reference
@@ -1382,9 +1393,9 @@ pub fn symlinkat<'a>(
     let _ = unsafe {
         syscall3(
             abi::SYMLINKAT,
-            Arg::from_c_str(target),
+            Arg::from_c_str(target.as_ref()),
             Arg::from_at_fd(&newdirfd.into()),
-            Arg::from_c_str(linkpath),
+            Arg::from_c_str(linkpath.as_ref()),
         )
         .wrap_syscall(Syscall::Symlinkat)?
     };
@@ -1474,7 +1485,11 @@ pub fn keyctl_join_session_keyring(
         syscall2(
             abi::KEYCTL,
             Arg::from_int(keyctl::KEYCTL_JOIN_SESSION_KEYRING as _),
-            Arg::from_optional_c_str(desc),
+            if let Some(desc) = desc {
+                Arg::from_c_str(desc)
+            } else {
+                Arg::from_ptr(ptr::null::<ffi::c_char>())
+            },
         )
         .wrap_syscall(Syscall::Keyctl)?
     } as _;
@@ -1609,6 +1624,386 @@ pub fn sched_setattr(
             Arg::from_uint(flags),
         )
         .wrap_syscall(Syscall::SchedSetattr)?
+    };
+
+    Ok(())
+}
+
+/// Iterator over the results of a `getdents64(2)` call.
+#[derive(Debug)]
+pub struct DirEntries<'storage> {
+    /// Reference to the underlying storage containing the output of the
+    /// `getdents64(2)` call.
+    dirp: &'storage [u8],
+
+    /// Number of bytes read by the `getdents64(2)` call.
+    n_bytes: usize,
+
+    /// Offset into the storage buffer.
+    offset: usize,
+}
+
+const _: () = assert!(8 % align_of::<linux::linux_dirent64>() == 0);
+
+impl<'storage> DirEntries<'storage> {
+    /// Construct a new [`DirEntries`] iterator.
+    ///
+    /// # Safety
+    ///
+    /// - `dirp[..n_bytes]` must contain valid, aligned
+    ///   [`linux::linux_dirent64`] records as produced by `getdents64(2)`.
+    /// - `offset <= n_bytes <= dirp.len()`.
+    /// - `offset` must identify the start of a record, or equal `n_bytes`.
+    /// - All `d_reclen` fields must be nonzero and bound a record within the
+    ///   provided buffer.
+    /// - File names must be null-terminated and contained within `d_reclen`
+    ///   bytes.
+    /// - Records must be stored contiguously.
+    #[inline(always)]
+    unsafe fn new(dirp: &'storage [u8], n_bytes: usize, offset: usize) -> Self {
+        debug_assert!(
+            offset <= n_bytes && n_bytes <= dirp.len(),
+            "offset <= n_bytes <= dirp.len()"
+        );
+
+        Self {
+            dirp,
+            n_bytes,
+            offset,
+        }
+    }
+}
+
+impl<'storage> Iterator for DirEntries<'storage> {
+    type Item = (&'storage linux::linux_dirent64, &'storage CStr);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset >= self.n_bytes {
+            return None;
+        }
+
+        let output: &linux::linux_dirent64 = {
+            //SAFETY: invariants upon the constructor `DirEntries::new` ensure
+            //        `self.offset` is within the bounds of the array
+            let intermediary = unsafe { self.dirp.get_unchecked(self.offset..) }
+                .as_ptr()
+                as *const linux::linux_dirent64;
+
+            //SAFETY: `linux_dirent64` is a c structure, valid for any bit
+            //        pattern
+            unsafe { &*intermediary }
+        };
+
+        debug_assert!(
+            self.offset + output.d_reclen as usize <= self.n_bytes,
+            "record lengths must be contained within the buffer"
+        );
+
+        self.offset += output.d_reclen as usize;
+
+        //SAFETY: we know the kernel initializes the C string properly with a
+        //        null terminator
+        let name = unsafe {
+            CStr::from_ptr(output.d_name.as_ptr().cast::<ffi::c_char>())
+        };
+
+        Some((output, name))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        //TODO: provide a better upper bound and a lower bound
+        (0, (self.offset >= self.n_bytes).then_some(0))
+    }
+}
+
+/// Given an offset into a `dirp` slice and the slice itself, return the next
+/// [`linux::linux_dirent64`] structure as well as the [`CStr`] after.
+///
+/// # Safety
+///
+/// - `dirp[..n_bytes]` must contain valid, aligned [`linux::linux_dirent64`]
+///   records as produced by `getdents64(2)`.
+/// - `offset <= n_bytes <= dirp.len()`.
+/// - `offset` must identify the start of a record, or equal `n_bytes`.
+/// - All `d_reclen` fields must be nonzero and bound a record within the
+///   provided buffer.
+/// - File names must be null-terminated and contained within `d_reclen` bytes.
+/// - Records must be stored contiguously.
+//TODO: lower level, probably shouldn't be in meowix or at the very least,
+//      publicly exposed?
+pub unsafe fn next_dirent<'storage>(
+    dirp: &'storage [u8],
+    n_bytes: usize,
+    offset: &mut usize,
+) -> Option<(&'storage linux::linux_dirent64, &'storage CStr)> {
+    if *offset >= n_bytes {
+        return None;
+    }
+
+    let output: &linux::linux_dirent64 = {
+        //SAFETY: caller asserts offset is valid within the buffer
+        let intermediary = unsafe { dirp.get_unchecked(*offset..) }.as_ptr()
+            as *const linux::linux_dirent64;
+
+        //SAFETY: `linux_dirent64` is a c structure, valid for any bit pattern
+        unsafe { &*intermediary }
+    };
+
+    debug_assert!(
+        *offset + output.d_reclen as usize <= n_bytes,
+        "record lengths must be contained within the buffer"
+    );
+
+    *offset += output.d_reclen as usize;
+
+    //SAFETY: we know the kernel initializes the C string properly with a null
+    //        terminator
+    let name =
+        unsafe { CStr::from_ptr(output.d_name.as_ptr().cast::<ffi::c_char>()) };
+
+    Some((output, name))
+}
+
+/// `getdents64(2)`.
+#[inline]
+pub fn getdents64<'storage>(
+    fd: impl AsFd,
+    dirp: &'storage mut [u8],
+) -> Result<DirEntries<'storage>, SyscallError> {
+    let padding = dirp
+        .as_ptr()
+        .align_offset(align_of::<linux::linux_dirent64>());
+
+    //NOTE: we need to align reads here to ensure we don't invoke ub
+    let dirp = dirp
+        .get_mut(padding..)
+        .ok_or(SyscallError::new(Syscall::Getdents64, Errno::INVAL))?;
+
+    //NOTE: saturate length at `INT_MAX` as this is what the syscall expects
+    let count = dirp.len().min(ffi::c_int::MAX as usize);
+
+    //SAFETY: the invariants upon the provided types ensure this call is valid
+    let n_bytes = unsafe {
+        syscall3(
+            abi::GETDENTS64,
+            Arg::from_fd(fd.as_fd()),
+            Arg::from_mut_ptr(dirp),
+            Arg::from_size_t(count),
+        )
+        .wrap_syscall(Syscall::Getdents64)?
+    };
+
+    debug_assert!(
+        n_bytes <= count as u64 && count <= dirp.len(),
+        "n_bytes <= count <= dirp.len()"
+    );
+
+    //SAFETY: the syscall above initializes `dirp` with `linux_dirent64`
+    //        structures, and 0 is always less than or equal to `n_bytes`, which
+    //        is an unsigned integer
+    Ok(unsafe { DirEntries::new(dirp, n_bytes as usize, 0) })
+}
+
+/// `getdents64(2)`.
+///
+/// Returns the aligned offset into `dirp` and the number of bytes written by
+/// `getdents64(2)` after the offset.
+///
+/// # Notes
+///
+/// This function does not provide a convenient interface for end-users, it is
+/// for those whose situation does not allow them to use the higher level
+/// interface provided by [`getdents64`]. Prefer [`getdents64`] wher possible.
+#[inline]
+pub fn getdents64_raw(
+    fd: impl AsFd,
+    dirp: &mut [u8],
+) -> Result<(usize, usize), SyscallError> {
+    let padding = dirp
+        .as_ptr()
+        .align_offset(align_of::<linux::linux_dirent64>());
+
+    //NOTE: we need to align reads here to ensure we don't invoke ub
+    let dirp = dirp
+        .get_mut(padding..)
+        .ok_or(SyscallError::new(Syscall::Getdents64, Errno::INVAL))?;
+
+    //NOTE: saturate length at `INT_MAX` as this is what the syscall expects
+    let count = dirp.len().min(ffi::c_int::MAX as usize);
+
+    //SAFETY: the invariants upon the provided types ensure this call is valid
+    let n_bytes = unsafe {
+        syscall3(
+            abi::GETDENTS64,
+            Arg::from_fd(fd.as_fd()),
+            Arg::from_mut_ptr(dirp),
+            Arg::from_size_t(count),
+        )
+        .wrap_syscall(Syscall::Getdents64)?
+    };
+
+    debug_assert!(
+        n_bytes <= count as u64 && count <= dirp.len(),
+        "n_bytes <= count <= dirp.len()"
+    );
+
+    Ok((padding, n_bytes as usize))
+}
+
+/// `lseek(2)`.
+///
+/// This wrapper uses `lseek(2)` on architectures with 64-bit pointers, and
+/// either `llseek(2)` or `_llseek(2)` on architectures with 32-bit pointers,
+/// depending upon if it is a "legacy" 32-bit architecture or not. See the
+/// definition of [`abi::LLSEEK`] for more information.
+#[inline]
+pub fn lseek(
+    fd: impl AsFd,
+    offset: linux::__kernel_loff_t,
+    whence: ffi::c_int,
+) -> Result<linux::__kernel_loff_t, SyscallError> {
+    let mut new_offset = MaybeUninit::<linux::__kernel_loff_t>::uninit();
+
+    //SAFETY: invariants upon the arguments ensure this call is valid
+    #[cfg(target_pointer_width = "64")]
+    let _ = new_offset.write(unsafe {
+        syscall3(
+            abi::LSEEK,
+            Arg::from_fd(fd.as_fd()),
+            Arg::from_loff_t(offset),
+            Arg::from_int(whence),
+        )
+        .wrap_syscall(Syscall::Lseek)? as _
+    });
+
+    //SAFETY: invariants upon the arguments ensure this call is valid
+    #[cfg(target_pointer_width = "32")]
+    unsafe {
+        syscall5(
+            abi::LLSEEK,
+            Arg::from_fd(fd.as_fd()),
+            Arg::from_long((offset >> 32) as _),
+            Arg::from_long(offset as _),
+            Arg::from_mut_ptr(&mut new_offset),
+            Arg::from_int(whence),
+        )
+        .wrap_syscall(Syscall::Lseek)?
+    };
+
+    //SAFETY: we just initialized the value above
+    Ok(unsafe { new_offset.assume_init() })
+}
+
+/// `writev(2)`.
+#[inline]
+pub fn writev(
+    fd: impl AsFd,
+    iov: &[linux::iovec],
+) -> Result<usize, SyscallError> {
+    //SAFETY: invariants on the provided types ensure this is a valid syscall
+    let n_written = unsafe {
+        syscall3(
+            abi::WRITEV,
+            Arg::from_fd(fd.as_fd()),
+            Arg::from_ptr(iov.as_ptr()),
+            Arg::from_int(iov.len() as ffi::c_int),
+        )
+        .wrap_syscall(Syscall::Writev)?
+    };
+
+    Ok(n_written as usize)
+}
+
+/// `readv(2)`.
+#[inline]
+pub fn readv(
+    fd: impl AsFd,
+    iov: &mut [linux::iovec],
+) -> Result<usize, SyscallError> {
+    //SAFETY: invariants upon the provided types ensure this is a valid syscall
+    let n_read = unsafe {
+        syscall3(
+            abi::READV,
+            Arg::from_fd(fd.as_fd()),
+            Arg::from_mut_ptr(iov.as_mut_ptr()),
+            Arg::from_int(iov.len() as ffi::c_int),
+        )
+        .wrap_syscall(Syscall::Readv)?
+    };
+
+    Ok(n_read as usize)
+}
+
+/// `flock(2)`.
+#[inline]
+pub fn flock(fd: impl AsFd, op: ffi::c_int) -> Result<(), SyscallError> {
+    //SAFETY: invariants on the provided types ensure this is a valid syscall
+    let _ = unsafe {
+        syscall2(abi::FLOCK, Arg::from_fd(fd.as_fd()), Arg::from_int(op))
+            .wrap_syscall(Syscall::Flock)?
+    };
+
+    Ok(())
+}
+
+/// `linkat(2)`.
+#[inline]
+pub fn linkat(
+    olddirfd: impl AsFd,
+    oldpath: impl AsRef<CStr>,
+    newdirfd: impl AsFd,
+    newpath: impl AsRef<CStr>,
+    flags: ffi::c_int,
+) -> Result<(), SyscallError> {
+    //SAFETY: invariants upon the provided types ensure this is a valid syscall
+    let _ = unsafe {
+        syscall5(
+            abi::LINKAT,
+            Arg::from_fd(olddirfd.as_fd()),
+            Arg::from_c_str(oldpath.as_ref()),
+            Arg::from_fd(newdirfd.as_fd()),
+            Arg::from_c_str(newpath.as_ref()),
+            Arg::from_int(flags),
+        )
+        .wrap_syscall(Syscall::Linkat)?
+    };
+
+    Ok(())
+}
+
+/// `fsetxattr(2)`.
+#[inline]
+pub fn fsetxattr(
+    fd: impl AsFd,
+    name: impl AsRef<CStr>,
+    value: impl AsRef<[u8]>,
+    flags: ffi::c_int,
+) -> Result<(), SyscallError> {
+    let value = value.as_ref();
+
+    //SAFETY: invariants on the provided types ensure this is a valid syscall
+    let _ = unsafe {
+        syscall5(
+            abi::FSETXATTR,
+            Arg::from_fd(fd.as_fd()),
+            Arg::from_c_str(name.as_ref()),
+            Arg::from_ptr(value.as_ref()),
+            Arg::from_size_t(value.len()),
+            Arg::from_int(flags),
+        )
+        .wrap_syscall(Syscall::Fsetxattr)?
+    };
+
+    Ok(())
+}
+
+/// `fchmod(2)`.
+//TODO: use __kernel_mode_t???
+#[inline]
+pub fn fchmod(fd: impl AsFd, mode: ffi::c_uint) -> Result<(), SyscallError> {
+    let _ = unsafe {
+        syscall2(abi::FCHMOD, Arg::from_fd(fd.as_fd()), Arg::from_uint(mode))
+            .wrap_syscall(Syscall::Fchmod)?
     };
 
     Ok(())

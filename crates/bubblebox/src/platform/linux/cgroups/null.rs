@@ -3,7 +3,7 @@
 use super::{Backend, Cgroups};
 
 /// Null backend that doesn't initialize cgroups at all.
-#[derive(Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct NullCgroups;
 
 impl Cgroups<NullCgroups> {

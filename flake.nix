@@ -44,11 +44,31 @@
 
           targetUnderscore = pkgs.lib.replaceStrings [ "-" ] [ "_" ] target;
           targetUpper = pkgs.lib.toUpper targetUnderscore;
+
+          evcxr =
+            (pkgs.evcxr.override {
+              rustPlatform = pkgs.makeRustPlatform {
+                rustc = rustToolchain;
+                cargo = rustToolchain;
+              };
+
+              rustc = rustToolchain;
+              cargo = rustToolchain;
+              # this is broken now for some reason
+              withMold = false;
+            }).overrideAttrs
+              (old: {
+                env = old.env // {
+                  RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+                };
+                doCheck = false;
+              });
         in
         {
           default = pkgs.mkShell {
             packages = [
               rustToolchain
+              evcxr
               pkgs.cargo-fuzz
               pkgs.cargo-deny
               pkgs.pkg-config

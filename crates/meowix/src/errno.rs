@@ -87,7 +87,7 @@ impl Errno {
     /// `value` must be in the range `0xf001..=0xffff`.
     #[inline]
     pub(crate) const unsafe fn from_u16_unchecked(raw: u16) -> Self {
-        debug_assert!(raw >= 0xf001, "`value` must be in 0xf001..=0xffff");
+        debug_assert!(raw >= 0xf001, "`raw` must be in 0xf001..=0xffff");
 
         //SAFETY: caller asserts value is in the specified range
         unsafe { mem::transmute(raw) }

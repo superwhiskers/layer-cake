@@ -14,7 +14,9 @@ use meowix::{
     ids::RawGid,
     mode::Mode,
     retry_on_interrupt, syscalls,
-    util::{Cwd, PATH_COMPONENT_MAX, WithCStr},
+    util::{
+        Cwd, PATH_COMPONENT_MAX, WithCStr, unsigned_decimal_digits_upper_bound,
+    },
 };
 
 use super::{
@@ -75,7 +77,7 @@ pub fn apply_tmpfs_size(
     /// Sized as the upper bound on the number of digits in a u64 + a byte for
     /// "%" and a null byte.
     const fn size_percent_buffer() -> usize {
-        fmt::unsigned_decimal_digits_upper_bound::<u64>().saturating_add(2)
+        unsigned_decimal_digits_upper_bound::<u64>().saturating_add(2)
     }
     let mut buffer = itoa::Buffer::new();
 
@@ -85,8 +87,7 @@ pub fn apply_tmpfs_size(
         }
         TmpfsSize::Bytes(bytes) => {
             buffer.format(bytes).with_c_str::<{
-                fmt::unsigned_decimal_digits_upper_bound::<u64>()
-                    .saturating_add(1)
+                unsigned_decimal_digits_upper_bound::<u64>().saturating_add(1)
             }, _, _, PostSpawnGuestError>(
                 |bytes| syscalls::fsconfig_set_string(&fs_fd, c"size", bytes),
             )?;
@@ -113,7 +114,7 @@ pub fn apply_tmpfs_size(
 
     if let Some(max_inodes) = max_inodes {
         buffer.format(max_inodes).with_c_str::<{
-            fmt::unsigned_decimal_digits_upper_bound::<u64>().saturating_add(1)
+            unsigned_decimal_digits_upper_bound::<u64>().saturating_add(1)
         }, _, _, PostSpawnGuestError>(
             |max_inodes| {
                 syscalls::fsconfig_set_string(&fs_fd, c"nr_inodes", max_inodes)
@@ -240,7 +241,7 @@ where
 
                 if let Some(gid) = gid {
                     buffer.format(gid.into_raw()).with_c_str::<{
-                        fmt::unsigned_decimal_digits_upper_bound::<RawGid>() + 1
+                        unsigned_decimal_digits_upper_bound::<RawGid>() + 1
                     }, _, _, PostSpawnGuestError>(
                         |gid| {
                             syscalls::fsconfig_set_string(&fs_fd, c"gid", gid)

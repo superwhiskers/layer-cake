@@ -16,8 +16,15 @@ bubblebox.workspace = true
 
 [dependencies.zip]
 version = "9"
+optional = true
 default-features = false
 features = ["deflate"]
+
+[features]
+default = []
+
+# Adds support for interpreting the binary as a ZIP archive.
+zip = ["dep:zip"]
 
 [lints]
 workspace = true

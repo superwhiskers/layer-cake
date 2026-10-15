@@ -16,7 +16,7 @@ use super::{
 
 /// [`Cgroups`] instantiated from an [`OwnedFd`] representing a directory in the
 /// host's `cgroups(7)` hierarchy.
-#[derive(Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct OwnedFdCgroups;
 
 impl Cgroups<OwnedFdCgroups> {

@@ -23,5 +23,8 @@ default = []
 # Adds support for the `alloc` crate.
 alloc = []
 
+# Adds support for the `std` crate.
+std = ["alloc"]
+
 [lints]
 workspace = true

@@ -7,36 +7,6 @@ use super::errors::{
     PostSpawnGuestOther as PostSpawnGuestOtherError,
 };
 
-/// Compute the number of decimal digits in a [`u128`] value.
-pub const fn compute_decimal_digits_u128(mut n: u128) -> usize {
-    let mut digits = 1usize;
-
-    while n >= 10 {
-        n /= 10;
-        digits = digits.saturating_add(1);
-    }
-
-    digits
-}
-
-/// Compute the upper bound on the number of decimal digits for the given
-/// unsigned integer type.
-pub const fn unsigned_decimal_digits_upper_bound<T>() -> usize {
-    compute_decimal_digits_u128(
-        u128::MAX
-            >> (128usize.saturating_sub(size_of::<T>().saturating_mul(8))),
-    )
-}
-
-/// Compute the upper bound on the number of decimal digits and possible sign
-/// for the given signed integer type.
-pub const fn signed_decimal_digits_upper_bound<T>() -> usize {
-    compute_decimal_digits_u128(
-        1 << (size_of::<T>().saturating_mul(8).saturating_sub(1)),
-    )
-    .saturating_add(1)
-}
-
 /// Writes bytes to the given buffer and updates the offset.
 ///
 /// # Errors

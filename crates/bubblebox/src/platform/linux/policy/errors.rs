@@ -9,7 +9,7 @@ use std::{error, fmt};
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum Policy {
-    /// A syscall failed.
+    /// Syscall error.
     Syscall(SyscallError),
 
     /// File did not turn out to be a file.
@@ -28,18 +28,16 @@ pub enum Policy {
     CStrBufferTooSmall,
 
     /// A string being converted to a C string contained a null byte.
-    FromBytesWithNulError(std::ffi::FromBytesWithNulError),
+    FromBytesWithNul(std::ffi::FromBytesWithNulError),
 }
 
 impl fmt::Display for Policy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Syscall(e) => write!(f, "syscall error: {e}"),
-            Self::NotAFile => {
-                f.write_str("file specified was not actually a file")
-            }
+            Self::NotAFile => f.write_str("specified file was not a file"),
             Self::NotADirectory => {
-                f.write_str("directory specified was not actually a directory")
+                f.write_str("specified directory was not a directory")
             }
             Self::InvalidFdPolicy => {
                 f.write_str("file descriptor policy was invalid")
@@ -48,7 +46,7 @@ impl fmt::Display for Policy {
             Self::CStrBufferTooSmall => f.write_str(
                 "a buffer used for C string conversion was too small",
             ),
-            Self::FromBytesWithNulError(e) => {
+            Self::FromBytesWithNul(e) => {
                 write!(f, "C string conversion error: {e}")
             }
         }
@@ -71,6 +69,6 @@ impl From<CStrBufferTooSmall> for Policy {
 
 impl From<std::ffi::FromBytesWithNulError> for Policy {
     fn from(error: std::ffi::FromBytesWithNulError) -> Self {
-        Self::FromBytesWithNulError(error)
+        Self::FromBytesWithNul(error)
     }
 }

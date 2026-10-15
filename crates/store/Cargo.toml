@@ -1,0 +1,19 @@
+[package]
+name = "layer-cake-store"
+description = "Store management for the layer cake Minecraft launcher"
+version = "0.0.0"
+authors = ["superwhiskers <whiskerdev@protonmail.com>"]
+repository = "../../readme.md"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+blake3.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+meowix.workspace = true
+linux-raw-sys.workspace = true
+itoa.workspace = true
+
+[lints]
+workspace = true

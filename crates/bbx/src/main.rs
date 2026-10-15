@@ -4,26 +4,33 @@
 
 //TODO: remaining things for bwrap-parity:
 // - seccomp input
+//   - take in an fd
 // - overlay mounts
+//   - implemented, just needs the bbx wrapper
 // - maybe a minimal dev subset
 // - files materialized via fds
+//   - effectively the same as --bundled-file
 // - selinux labels
 // - --bind-fd equivalents to what exists on the bwrap git
+//   - this could only be directories as files need the path
 // - fallible binds(?)
+//   - we have the benefit of being able to catch these before making namespaces
 // - args via fd
 // - namespace fds (requires implementation, would be less varied compared to
 //   bwrap)
 //TODO: substitutions for $uid, $gid in args when used in the zip bundle to
 //      allow binding directories like /run/$uid/...
-//TODO: fd mapping, mostly to test the pipe remapping works
+//TODO: mapping fds
 //TODO: avoid reading the entire binary to find a bundle. add a limit.
+//TODO: add systemd-backed cgroups support
+//      - would need a lot of flags or some other specification language
 
 use anyhow::Context;
 use bubblebox::{
     command::Command,
     paths::Guest,
     platform::{
-        cgroups::SystemdCgroups,
+        cgroups::NullCgroups,
         command::CommandExt,
         meowix::{
             capabilities::CapabilitySet,
@@ -42,12 +49,15 @@ use std::{
     collections::HashMap,
     convert::identity,
     env, ffi,
-    fs::File,
-    io::Read,
     os::unix::process::ExitStatusExt,
     process::{self, ExitCode},
 };
+
+#[cfg(feature = "zip")]
 use zip::ZipArchive;
+
+#[cfg(feature = "zip")]
+use std::{fs::File, io::Read};
 
 /// Print the help string.
 fn help(name: &str) -> ! {
@@ -155,8 +165,8 @@ command unchanged."
 /// falis.
 fn interpret_policy<'a>(
     mut parser: lexopt::Parser,
-    mut archive: Option<ZipArchive<File>>,
-) -> anyhow::Result<(Policy<'a, SystemdCgroups>, Command)> {
+    #[cfg(feature = "zip")] mut archive: Option<ZipArchive<File>>,
+) -> anyhow::Result<(Policy<'a, NullCgroups>, Command)> {
     use lexopt::prelude::*;
 
     let name = parser.bin_name().unwrap_or("bbx").to_owned();
@@ -415,6 +425,7 @@ fn interpret_policy<'a>(
                     tree.mount(Mount::directory(mode), guest_path)
                 })?;
             }
+            #[cfg(feature = "zip")]
             Long("bundled-file") => {
                 if let Some(archive) = &mut archive {
                     let mut contents = Vec::new();
@@ -533,22 +544,27 @@ fn interpret_policy<'a>(
 }
 
 fn main() -> anyhow::Result<ExitCode> {
-    let (policy, command) = match File::open("/proc/self/exe")
-        .map_err::<anyhow::Error, _>(Into::into)
-        .and_then(|file| Ok(ZipArchive::new(file)?))
-        .and_then(|mut archive| {
-            let mut configuration = String::new();
-            let _ = archive
-                .by_path("/bbx.conf")?
-                .read_to_string(&mut configuration)?;
+    let (policy, command) = cfg_select! {
+        feature = "zip" => {
+            match File::open("/proc/self/exe")
+                .map_err::<anyhow::Error, _>(Into::into)
+                .and_then(|file| Ok(ZipArchive::new(file)?))
+                .and_then(|mut archive| {
+                    let mut configuration = String::new();
+                    let _ = archive
+                        .by_path("/bbx.conf")?
+                        .read_to_string(&mut configuration)?;
 
-            Ok((archive, configuration))
-        }) {
-        Ok((archive, configuration)) => interpret_policy(
-            lexopt::Parser::from_args(configuration.split_whitespace()),
-            Some(archive),
-        )?,
-        Err(_) => interpret_policy(lexopt::Parser::from_env(), None)?,
+                    Ok((archive, configuration))
+                }) {
+                Ok((archive, configuration)) => interpret_policy(
+                    lexopt::Parser::from_args(configuration.split_whitespace()),
+                    Some(archive),
+                )?,
+                Err(_) => interpret_policy(lexopt::Parser::from_env(), None)?,
+            }
+        }
+        _ => interpret_policy(lexopt::Parser::from_env())?,
     };
 
     let guest = policy.spawn(&command)?;

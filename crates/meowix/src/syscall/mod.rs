@@ -4,7 +4,7 @@
 
 use core::{
     ffi::{self, CStr},
-    ptr,
+    ptr::{self, Thin},
 };
 use linux_raw_sys::general as linux;
 
@@ -44,13 +44,13 @@ impl Arg {
 
     /// Construct a syscall argument from an immutable pointer value.
     #[inline(always)]
-    pub fn from_ptr<T>(ptr: *const T) -> Self {
-        Self(ptr as usize as ffi::c_long)
+    pub fn from_ptr<T: ?Sized>(ptr: *const T) -> Self {
+        Self(ptr.addr() as ffi::c_long)
     }
 
     /// Construct a syscall argument from an optional immutable reference value.
     #[inline(always)]
-    pub fn from_optional_ptr<T>(ptr: Option<&T>) -> Self {
+    pub fn from_optional_ptr<T: ?Sized + Thin>(ptr: Option<&T>) -> Self {
         Self::from_ptr(if let Some(ptr) = ptr {
             ptr
         } else {
@@ -60,13 +60,15 @@ impl Arg {
 
     /// Construct a syscall argument from a mutable pointer value.
     #[inline(always)]
-    pub fn from_mut_ptr<T>(ptr: *mut T) -> Self {
-        Self(ptr as usize as ffi::c_long)
+    pub fn from_mut_ptr<T: ?Sized>(ptr: *mut T) -> Self {
+        Self(ptr.addr() as ffi::c_long)
     }
 
     /// Construct a syscall argument from an optional mutable reference value.
     #[inline(always)]
-    pub fn from_optional_mut_ptr<T>(ptr: Option<&mut T>) -> Self {
+    pub fn from_optional_mut_ptr<T: ?Sized + Thin>(
+        ptr: Option<&mut T>,
+    ) -> Self {
         Self::from_mut_ptr(if let Some(ptr) = ptr {
             ptr
         } else {
@@ -78,16 +80,6 @@ impl Arg {
     #[inline(always)]
     pub fn from_c_str(c_str: &'_ CStr) -> Self {
         Self::from_ptr(c_str.as_ptr())
-    }
-
-    /// Construct a syscall argument from an optional C string.
-    #[inline(always)]
-    pub fn from_optional_c_str(c_str: Option<&'_ CStr>) -> Self {
-        Self::from_ptr(if let Some(c_str) = c_str {
-            c_str.as_ptr()
-        } else {
-            ptr::null::<ffi::c_char>()
-        })
     }
 
     /// Construct a syscall argument from a file descriptor.
@@ -149,6 +141,14 @@ impl Arg {
     #[inline(always)]
     pub fn from_pid(pid: Pid) -> Self {
         Self::from_int(pid.into_raw())
+    }
+
+    /// Construct a syscall argument from a [`linux::__kernel_loff_t`] value.
+    #[inline(always)]
+    pub fn from_loff_t(value: linux::__kernel_loff_t) -> Self {
+        //NOTE: this should always be valid, even if it is long long
+        #[allow(trivial_numeric_casts)]
+        Self(value as ffi::c_long)
     }
 
     /// Construct a syscall argument from a [`Process`].

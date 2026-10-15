@@ -8,22 +8,22 @@ readme = "readme.md"
 edition = "2024"
 license = "AGPL-3.0-only"
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 linux-raw-sys.workspace = true
-bytemuck.workspace = true
 meowix.workspace = true
+bytemuck.workspace = true
 itoa.workspace = true
 scopeguard.workspace = true
 
-[dependencies.dbus]
+[target.'cfg(target_os = "linux")'.dependencies.dbus]
 workspace = true
 optional = true
 
-[dependencies.libdbus-sys]
+[target.'cfg(target_os = "linux")'.dependencies.libdbus-sys]
 workspace = true
 optional = true
 
-[dependencies.uuid]
+[target.'cfg(target_os = "linux")'.dependencies.uuid]
 workspace = true
 optional = true
 
@@ -31,7 +31,7 @@ optional = true
 default = []
 
 # Adds support for automatically acquiring a part of the cgroups hierarchy
-# through systemd
+# through systemd.
 systemd-cgroups = ["dep:dbus", "dep:libdbus-sys", "dep:uuid"]
 
 [lints]

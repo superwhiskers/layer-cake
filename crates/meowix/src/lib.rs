@@ -6,6 +6,8 @@
 #![feature(pattern_type_range_trait)]
 #![feature(const_trait_impl)]
 #![feature(maybe_uninit_array_assume_init)]
+#![feature(ptr_metadata)]
+#![cfg_attr(feature = "std", feature(can_vector))]
 //NOTE: required for the niche optimization in `fd`
 #![allow(internal_features)]
 #![feature(pattern_types)]
@@ -16,10 +18,10 @@
 //! `alloc` feature perform no allocation and are designed to be usable after
 //! `clone3(2)` and from asynchronous signal handlers.
 //!
-//! These guarantees continue to apply to those APIs even when `alloc` is
-//! enabled. Enabling `alloc` only exposes additional APIs. Callers remain
-//! responsible for ensuring their use of non-`alloc` APIs are valid for the
-//! current process state.
+//! These guarantees continue to apply to those APIs even when `alloc` or `std`
+//! are enabled. Enabling either feature only exposes additional APIs. Callers
+//! remain responsible for ensuring their use of non-`alloc` or `std` APIs is
+//! valid for the current process state.
 
 //TODO: add builder support for io_uring filtering and seccomp filtering
 
@@ -28,6 +30,9 @@ compile_error!("this crate only supports Linux");
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
 
 /// Convenience export of the `linux-raw-sys` crate.
 ///

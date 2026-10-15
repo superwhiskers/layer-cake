@@ -7,7 +7,11 @@ use linux_raw_sys::general as linux;
 use meowix::{
     fd::AsFd,
     ids::{Gid, RawGid, RawUid, Uid},
-    open_beneath_and_write, retry_on_interrupt, syscalls, write_checked,
+    open_beneath_and_write, retry_on_interrupt, syscalls,
+    util::{
+        signed_decimal_digits_upper_bound, unsigned_decimal_digits_upper_bound,
+    },
+    write_checked,
 };
 
 use super::{
@@ -33,8 +37,8 @@ pub fn write_timens_offsets(
 ) -> Result<(), PostSpawnGuestError> {
     /// Sizes the buffer we need to use to avoid heap allocations.
     const fn size_offset_buffer() -> usize {
-        fmt::signed_decimal_digits_upper_bound::<i64>()
-            .saturating_add(fmt::unsigned_decimal_digits_upper_bound::<u32>())
+        signed_decimal_digits_upper_bound::<i64>()
+            .saturating_add(unsigned_decimal_digits_upper_bound::<u32>())
             .saturating_add(11)
     }
 
@@ -123,7 +127,7 @@ pub fn write_simple_uid_gid_map(
     /// the ids and the size of the mapping and the single `1`.
     const fn size_uid_gid_map_buffer<T>() -> usize {
         2_usize
-            .saturating_mul(fmt::unsigned_decimal_digits_upper_bound::<T>())
+            .saturating_mul(unsigned_decimal_digits_upper_bound::<T>())
             .saturating_add(3)
     }
 

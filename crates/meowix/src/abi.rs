@@ -62,6 +62,13 @@ pub const SECCOMP: ffi::c_long = linux::__NR_seccomp as _;
 pub const KEYCTL: ffi::c_long = linux::__NR_keyctl as _;
 pub const PRLIMIT64: ffi::c_long = linux::__NR_prlimit64 as _;
 pub const SCHED_SETATTR: ffi::c_long = linux::__NR_sched_setattr as _;
+pub const GETDENTS64: ffi::c_long = linux::__NR_getdents64 as _;
+pub const WRITEV: ffi::c_long = linux::__NR_writev as _;
+pub const FLOCK: ffi::c_long = linux::__NR_flock as _;
+pub const READV: ffi::c_long = linux::__NR_readv as _;
+pub const LINKAT: ffi::c_long = linux::__NR_linkat as _;
+pub const FSETXATTR: ffi::c_long = linux::__NR_fsetxattr as _;
+pub const FCHMOD: ffi::c_long = linux::__NR_fchmod as _;
 
 pub use architecture_specific::*;
 
@@ -82,3 +89,32 @@ mod architecture_specific {
     pub const GETEUID: ffi::c_long = linux::__NR_geteuid32 as _;
     pub const GETEGID: ffi::c_long = linux::__NR_getegid32 as _;
 }
+
+#[cfg(all(
+    target_pointer_width = "32",
+    any(
+        target_arch = "x86",
+        target_arch = "arm",
+        target_arch = "mips",
+        target_arch = "mips32r6",
+        target_arch = "powerpc",
+        target_arch = "sparc",
+    ),
+))]
+pub const LLSEEK: ffi::c_long = linux::__NR__llseek as _;
+
+#[cfg(all(
+    target_pointer_width = "32",
+    not(any(
+        target_arch = "x86",
+        target_arch = "arm",
+        target_arch = "mips",
+        target_arch = "mips32r6",
+        target_arch = "powerpc",
+        target_arch = "sparc",
+    )),
+))]
+pub const LLSEEK: ffi::c_long = linux::__NR_llseek as _;
+
+#[cfg(target_pointer_width = "64")]
+pub const LSEEK: ffi::c_long = linux::__NR_lseek as _;

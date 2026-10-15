@@ -19,6 +19,7 @@ libc = "0.2"
 itoa = "1"
 lexopt = "0.3"
 scopeguard = "1"
+blake3 = "1"
 
 [workspace.dependencies.libdbus-sys]
 version = "0.2"
@@ -34,8 +35,7 @@ version = "1"
 features = ["v4"]
 
 [workspace.dependencies.linux-raw-sys]
-#TODO: disabled temporarily until updates are merged
-# version = "0.12"
+#TODO: using a fork until equivalent changes are merged
 git = "https://github.com/superwhiskers/linux-raw-sys"
 features = ["netlink", "net", "errno", "general", "ioctl", "prctl", "ptrace", "keyctl", "io_uring"]
 
@@ -61,11 +61,10 @@ default-features = false
 
 [workspace.dependencies.bubblebox]
 path = "crates/bubblebox"
-features = ["systemd-cgroups"]
 
 [workspace.dependencies.meowix]
 path = "crates/meowix"
-features = ["alloc"]
+features = ["std"]
 
 [workspace.dependencies.layer-cake-core]
 path = "crates/core"

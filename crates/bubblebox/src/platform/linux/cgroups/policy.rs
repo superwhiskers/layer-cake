@@ -2,6 +2,10 @@
 
 //! Cgroups policy implementation.
 
+//TODO: controllers and cgroup properties should not have them as future
+//      changes may make implementing `Copy` a bad idea
+#![allow(missing_copy_implementations)]
+
 use linux_raw_sys::general as linux;
 use meowix::{
     fd::AsFd, open_beneath_and_write, retry_on_interrupt, syscalls,
